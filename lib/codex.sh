@@ -20,10 +20,9 @@ list_codex_sessions() {
         python3 -c "
 import json, os, sys, glob, re
 
-target_ws = os.path.normpath(sys.argv[1])
+target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 match_all = (sys.argv[2].lower() == 'true')
 
-# Look in specific sessions directories first
 preferred_dirs = [
     os.path.expanduser('~/.codex/sessions'),
     os.path.expanduser('~/.codex/history'),
@@ -50,11 +49,9 @@ def clean_text(val):
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
     if isinstance(val, dict):
-        # Look for text / content / message / prompt
         for k in ('content', 'text', 'message', 'prompt', 'query', 'body'):
             if k in val and val[k]:
                 return clean_text(val[k])
-        # Look in nested payload / data
         for k in ('payload', 'data', 'event'):
             if k in val and isinstance(val[k], dict):
                 return clean_text(val[k])
@@ -63,15 +60,11 @@ def clean_text(val):
 def extract_prompt_from_dict(obj):
     if not isinstance(obj, dict):
         return ''
-    
-    # Check direct role
     role = obj.get('role') or obj.get('type') or obj.get('event') or ''
     if role in ('user', 'human', 'USER_INPUT', 'user_message', 'input'):
         txt = clean_text(obj.get('content') or obj.get('message') or obj.get('text') or obj.get('prompt') or '')
         if txt:
             return txt
-
-    # Check payload or data wrapper (common in Codex rollouts)
     for wrapper_key in ('payload', 'data', 'event', 'item', 'body'):
         nested = obj.get(wrapper_key)
         if isinstance(nested, dict):
@@ -82,6 +75,15 @@ def extract_prompt_from_dict(obj):
                     return txt
     return ''
 
+def is_ws_match(session_ws):
+    if match_all:
+        return True
+    if not session_ws or not target_ws:
+        return False
+    s_norm = os.path.normpath(session_ws).rstrip('/')
+    # Strict match: exact workspace or target is a subdirectory inside session workspace
+    return (s_norm == target_ws) or target_ws.startswith(s_norm + '/')
+
 for base_dir in search_dirs:
     for sfile in glob.glob(os.path.join(base_dir, '**', '*.json*'), recursive=True):
         if not os.path.isfile(sfile) or os.path.basename(sfile).startswith('.'):
@@ -90,11 +92,9 @@ for base_dir in search_dirs:
             filename = os.path.basename(sfile)
             raw_id = os.path.splitext(filename)[0]
             
-            # Skip non-session files
             if any(k in raw_id.lower() for k in IGNORED_KEYWORDS) or 'node_modules' in sfile:
                 continue
 
-            # Extract clean ID if filename is rollout-YYYY-MM-DD...-<UUID>
             clean_id = raw_id
             match_uuid = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$', raw_id, re.I)
             if match_uuid:
@@ -154,7 +154,6 @@ for base_dir in search_dirs:
                             if ts:
                                 updated_at = str(ts)
                             
-                            # Check session ID and workspace in session_meta events
                             sid = data.get('session_id') or data.get('id')
                             if isinstance(data.get('payload'), dict):
                                 sid = sid or data['payload'].get('id') or data['payload'].get('session_id')
@@ -173,7 +172,7 @@ for base_dir in search_dirs:
                         except Exception:
                             continue
 
-            if match_all or not sws or sws == target_ws or target_ws.startswith(sws) or (sws and sws.startswith(target_ws)):
+            if is_ws_match(sws):
                 seen_ids.add(clean_id)
                 seen_ids.add(raw_id)
                 

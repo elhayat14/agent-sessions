@@ -145,12 +145,11 @@ for bdir in brain_dirs:
                     matched_ws = sorted(list(session_workspaces), key=len)[0]
             else:
                 for ws in session_workspaces:
-                    if ws == target_ws or ws.startswith(target_ws + '/') or target_ws.startswith(ws + '/'):
+                    w_norm = os.path.normpath(ws).rstrip('/')
+                    if w_norm == target_ws or target_ws.startswith(w_norm + '/'):
                         is_match = True
-                        matched_ws = ws
+                        matched_ws = w_norm
                         break
-                if not is_match and not session_workspaces and target_ws in ('', '.'):
-                    is_match = True
 
             if is_match:
                 seen_ids.add(conv_id)

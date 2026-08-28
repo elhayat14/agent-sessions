@@ -20,7 +20,7 @@ list_opencode_sessions() {
         python3 -c "
 import json, os, sys, glob, sqlite3, re
 
-target_ws = os.path.normpath(sys.argv[1])
+target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 match_all = (sys.argv[2].lower() == 'true')
 opencode_dirs = [
     os.path.expanduser('~/.local/share/opencode'),
@@ -44,6 +44,14 @@ def clean_text(val):
     if isinstance(val, dict):
         return clean_text(val.get('content') or val.get('text') or val.get('message') or '')
     return str(val)
+
+def is_ws_match(sws):
+    if match_all:
+        return True
+    if not sws or not target_ws:
+        return False
+    s_norm = os.path.normpath(sws).rstrip('/')
+    return (s_norm == target_ws) or target_ws.startswith(s_norm + '/')
 
 for base_dir in opencode_dirs:
     if not os.path.isdir(base_dir):
@@ -81,7 +89,7 @@ for base_dir in opencode_dirs:
                         if sid.lower() in IGNORED_NAMES:
                             continue
 
-                        if match_all or not sws or sws == target_ws or target_ws.startswith(sws):
+                        if is_ws_match(sws):
                             out = {
                                 'id': sid,
                                 'agent': 'OpenCode',
@@ -103,11 +111,9 @@ for base_dir in opencode_dirs:
             filename = os.path.basename(sfile)
             session_id = os.path.splitext(filename)[0]
             
-            # Skip non-session files
             if session_id.lower() in IGNORED_NAMES or 'node_modules' in sfile:
                 continue
 
-            # Check parent directory name - must look like sessions/conversations or ID must look like UUID/ses_
             parent_dir = os.path.basename(os.path.dirname(sfile)).lower()
             is_valid_dir = any(k in parent_dir for k in ('session', 'conversation', 'chat', 'history', 'tasks', 'agents'))
             is_valid_id = bool(re.match(r'^(ses_|task_|conv_|[0-9a-f-]{8,})', session_id, re.I))
@@ -129,7 +135,6 @@ for base_dir in opencode_dirs:
                 if content.startswith('{'):
                     try:
                         data = json.loads(content)
-                        # Must contain session-like keys
                         if not any(k in data for k in ('messages', 'conversation', 'turns', 'prompt', 'sessionId', 'session_id', 'workspace', 'cwd')):
                             continue
                         
@@ -142,7 +147,7 @@ for base_dir in opencode_dirs:
                     except Exception:
                         continue
                 
-                if match_all or not sws or sws == target_ws or target_ws.startswith(sws):
+                if is_ws_match(sws):
                     out = {
                         'id': session_id,
                         'agent': 'OpenCode',

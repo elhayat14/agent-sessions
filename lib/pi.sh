@@ -19,7 +19,7 @@ list_pi_sessions() {
         python3 -c "
 import json, os, sys, glob, re
 
-target_ws = os.path.normpath(sys.argv[1])
+target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 match_all = (sys.argv[2].lower() == 'true')
 
 pi_dirs = [
@@ -43,6 +43,14 @@ def clean_text(val):
     if isinstance(val, dict):
         return clean_text(val.get('content') or val.get('text') or val.get('prompt') or val.get('message') or '')
     return str(val)
+
+def is_ws_match(sws):
+    if match_all:
+        return True
+    if not sws or not target_ws:
+        return False
+    s_norm = os.path.normpath(sws).rstrip('/')
+    return (s_norm == target_ws) or target_ws.startswith(s_norm + '/')
 
 for base_dir in pi_dirs:
     if not os.path.isdir(base_dir):
@@ -113,7 +121,7 @@ for base_dir in pi_dirs:
                         except Exception:
                             continue
 
-            if match_all or not sws or sws == target_ws or target_ws.startswith(sws) or (sws and sws.startswith(target_ws)):
+            if is_ws_match(sws):
                 out = {
                     'id': session_id,
                     'agent': 'Pi',

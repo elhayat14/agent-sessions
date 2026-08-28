@@ -13,7 +13,7 @@ claude_path_to_slug() {
     echo "$ws_path" | sed 's/\//-/g'
 }
 
-# Reverse slug to workspace path (heuristic)
+# Reverse slug to workspace path
 claude_slug_to_path() {
     local slug="$1"
     echo "$slug" | sed 's/^-/\//' | sed 's/-/\//g'
@@ -36,24 +36,25 @@ get_claude_project_dirs() {
     local expected_slug
     expected_slug="$(claude_path_to_slug "$target_ws")"
     
-    # Check exact match
+    # 1. Exact match with leading dash
     if [[ -d "$CLAUDE_PROJECTS_DIR/$expected_slug" ]]; then
         echo "$CLAUDE_PROJECTS_DIR/$expected_slug"
         return
     fi
 
-    # Try leading dash match or without leading dash
+    # 2. Exact match without leading dash
     local alt_slug="${expected_slug#-}"
     if [[ -d "$CLAUDE_PROJECTS_DIR/$alt_slug" ]]; then
         echo "$CLAUDE_PROJECTS_DIR/$alt_slug"
         return
     fi
 
-    # Fallback: scan projects and check if name matches workspace tail or path
+    # 3. Check if target_ws is a subdirectory of a known project workspace
     for pdir in "$CLAUDE_PROJECTS_DIR"/*; do
         if [[ -d "$pdir" ]]; then
-            local bname="$(basename "$pdir")"
-            if [[ "$bname" == *"$expected_slug"* || "$expected_slug" == *"$bname"* ]]; then
+            local slug="$(basename "$pdir")"
+            local p_ws="$(claude_slug_to_path "$slug")"
+            if [[ -n "$p_ws" && "$target_ws" == "$p_ws"/* ]]; then
                 echo "$pdir"
             fi
         fi
@@ -61,7 +62,6 @@ get_claude_project_dirs() {
 }
 
 # Parse all Claude sessions for target workspace
-# Outputs JSON records: {"id": "...", "agent": "Claude Code", "timestamp": "...", "workspace": "...", "turns": N, "prompt": "..."}
 list_claude_sessions() {
     local target_ws="$1"
     local match_all="${2:-false}"
@@ -107,7 +107,6 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
-        # Clean XML tag wrappers
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
         return s.strip()
