@@ -433,15 +433,15 @@ col_prompt_w = 43
 
 header_line = (
     f'{BOLD}{GRAY}'
-    f'{\"#\":<{col_idx_w}}'
-    f'{\"SESSION ID\":<{col_id_w}}'
-    f'{\"AGENT\":<{col_agent_w}}'
-    f'{\"UPDATED\":<{col_age_w}}'
-    f'{\"TURNS\":<{col_turns_w}}'
+    f'{\"#\":<{col_idx_w}} '
+    f'{\"SESSION ID\":<{col_id_w}} '
+    f'{\"AGENT\":<{col_agent_w}} '
+    f'{\"UPDATED\":<{col_age_w}} '
+    f'{\"TURNS\":<{col_turns_w}} '
     f'{\"INITIAL PROMPT / SUMMARY\"}'
     f'{RESET}'
 )
-separator = f'{DIM}{\"─\" * 118}{RESET}'
+separator = f'{DIM}{\"─\" * 122}{RESET}'
 
 print(header_line)
 print(separator)
@@ -449,6 +449,8 @@ print(separator)
 for offset, r in enumerate(page_records):
     abs_idx = start_idx + offset + 1
     sid = r.get('id', '')
+    if len(sid) > col_id_w:
+        sid = sid[:col_id_w - 3] + '...'
     agent_raw = r.get('agent', '')
     badge = agent_badge(agent_raw)
     age = format_time(r.get('timestamp'))
@@ -462,11 +464,11 @@ for offset, r in enumerate(page_records):
     idx_str = f'[{abs_idx}]'
     
     print(
-        f'{YELLOW}{idx_str:<{col_idx_w}}{RESET}'
-        f'{CYAN}{sid:<{col_id_w}}{RESET}'
-        f'{badge}{agent_pad}'
-        f'{DIM}{age:<{col_age_w}}{RESET}'
-        f'{turns:<{col_turns_w}}'
+        f'{YELLOW}{idx_str:<{col_idx_w}}{RESET} '
+        f'{CYAN}{sid:<{col_id_w}}{RESET} '
+        f'{badge}{agent_pad} '
+        f'{DIM}{age:<{col_age_w}}{RESET} '
+        f'{turns:<{col_turns_w}} '
         f'{prompt}'
     )
 
