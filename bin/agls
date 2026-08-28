@@ -1,0 +1,572 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# agls - Agent Sessions CLI
+# List, inspect, search, resume, update, and uninstall AI agent sessions
+# Supports: Claude Code, Antigravity IDE / CLI, OpenCode, Codex, Pi
+# ==============================================================================
+
+set -euo pipefail
+
+VERSION="1.5.0"
+
+# Resolve script directory to load libraries
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+# Load library components
+source "$ROOT_DIR/lib/common.sh"
+source "$ROOT_DIR/lib/claude.sh"
+source "$ROOT_DIR/lib/antigravity.sh"
+source "$ROOT_DIR/lib/opencode.sh"
+source "$ROOT_DIR/lib/codex.sh"
+source "$ROOT_DIR/lib/pi.sh"
+
+show_help() {
+    cat << EOF
+${COLOR_BOLD}agls${COLOR_RESET} - AI Agent Session Manager (v${VERSION})
+
+${COLOR_BOLD}USAGE:${COLOR_RESET}
+    agls [COMMAND] [OPTIONS] [WORKSPACE_PATH]
+
+${COLOR_BOLD}COMMANDS:${COLOR_RESET}
+    update                Update agls to latest version from repository
+    uninstall             Remove agls symlinks and shell completions
+
+${COLOR_BOLD}ARGUMENTS:${COLOR_RESET}
+    WORKSPACE_PATH        Target workspace directory (default: current directory '.')
+
+${COLOR_BOLD}OPTIONS:${COLOR_RESET}
+    -p, --page <number>   Page number to display (default: 1)
+    -n, --limit <number>  Number of sessions per page (default: 20)
+    -a, --all             List sessions across all workspaces
+    --agent <name>        Filter by agent provider: claude | antigravity | opencode | codex | pi | all
+    -s, --search <query>  Filter sessions containing keyword in prompt or summary
+    --json                Output results as JSON
+    --show, -i [ID|NUM]   Inspect transcript for a session (by ID, prefix, or table row #)
+    --resume, -r [ID|NUM] Resume session (by ID, prefix, or table row #)
+    -y, --yes             Auto-confirm prompts (for uninstall/update)
+    -v, --version         Show version information
+    -h, --help            Show this help message
+
+${COLOR_BOLD}PAGINATION & RESUMING:${COLOR_RESET}
+    agls                          # View page 1
+    agls -p 2                     # Go to page 2
+    agls -p 3 -n 10               # Page 3 with 10 items per page
+    agls -r 1                     # Resume session #1 directly
+    agls -r 498f6e24              # Resume by partial session ID prefix
+    agls -r                       # Interactive picker to select and resume
+
+${COLOR_BOLD}EXAMPLES:${COLOR_RESET}
+    agls                          # List sessions for current directory
+    agls ~/projects/my-app        # List sessions for specific workspace
+    agls --all -s "refactor auth" # Search across all workspaces for keyword
+    agls --agent claude           # List only Claude Code sessions
+    agls --agent codex            # List only Codex sessions
+    agls --agent pi               # List only Pi sessions
+    agls --show 1                 # Inspect transcript of session #1
+    agls update                   # Pull latest changes and update agls
+    agls uninstall                # Remove agls from PATH and completions
+
+EOF
+}
+
+# Subcommand: UPDATE
+handle_update() {
+    echo "${COLOR_BOLD}Checking for updates to agls...${COLOR_RESET}"
+    if [[ ! -d "$ROOT_DIR/.git" ]]; then
+        echo "${COLOR_YELLOW}Notice: '$ROOT_DIR' is not a git clone. Re-install via git clone to enable self-updating.${COLOR_RESET}"
+        exit 1
+    fi
+
+    if command -v git &>/dev/null; then
+        echo "Fetching latest changes from git repository..."
+        if git -C "$ROOT_DIR" pull --ff-only; then
+            echo "Re-applying symlinks and completions..."
+            chmod +x "$ROOT_DIR/bin/agls" "$ROOT_DIR/install.sh" "$ROOT_DIR/uninstall.sh" 2>/dev/null || true
+            "$ROOT_DIR/install.sh" >/dev/null
+            echo "${COLOR_GREEN}✓ agls successfully updated to the latest version!${COLOR_RESET}"
+        else
+            echo "${COLOR_RED}Update failed. Check your network or git working tree status.${COLOR_RESET}" >&2
+            exit 1
+        fi
+    else
+        echo "${COLOR_RED}Error: git command not found.${COLOR_RESET}" >&2
+        exit 1
+    fi
+    exit 0
+}
+
+# Subcommand: UNINSTALL
+handle_uninstall() {
+    local auto_yes="${1:-false}"
+    if [[ "$auto_yes" != "true" && -t 0 ]]; then
+        read -r -p "Are you sure you want to uninstall agls? [y/N] " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Uninstallation cancelled."
+            exit 0
+        fi
+    fi
+
+    if [[ -f "$ROOT_DIR/uninstall.sh" ]]; then
+        "$ROOT_DIR/uninstall.sh"
+    else
+        rm -f "$HOME/.local/bin/agls" "$HOME/.local/bin/agent-sessions" "/usr/local/bin/agls" "/usr/local/bin/agent-sessions" 2>/dev/null || true
+        echo "${COLOR_GREEN}✓ agls symlinks removed.${COLOR_RESET}"
+    fi
+    exit 0
+}
+
+# Check if first argument is a subcommand
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        update)
+            shift
+            handle_update
+            ;;
+        uninstall)
+            shift
+            AUTO_YES=false
+            if [[ $# -gt 0 && ( "$1" == "-y" || "$1" == "--yes" ) ]]; then
+                AUTO_YES=true
+            fi
+            handle_uninstall "$AUTO_YES"
+            ;;
+    esac
+fi
+
+# Defaults
+TARGET_WORKSPACE=""
+MATCH_ALL=false
+AGENT_FILTER="all"
+SEARCH_QUERY=""
+PAGE=1
+LIMIT=20
+OUTPUT_JSON=false
+ACTION="list"
+TARGET_SESSION_ID=""
+
+# Parse command line flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -v|--version)
+            echo "agls v${VERSION}"
+            exit 0
+            ;;
+        -p|--page)
+            PAGE="${2:-1}"
+            shift 2
+            ;;
+        -n|--limit)
+            LIMIT="${2:-20}"
+            shift 2
+            ;;
+        -a|--all)
+            MATCH_ALL=true
+            shift
+            ;;
+        --agent)
+            AGENT_FILTER="${2:-all}"
+            shift 2
+            ;;
+        -s|--search)
+            SEARCH_QUERY="${2:-}"
+            shift 2
+            ;;
+        --json)
+            OUTPUT_JSON=true
+            shift
+            ;;
+        --show|-i)
+            ACTION="show"
+            if [[ $# -ge 2 && "$2" != -* ]]; then
+                TARGET_SESSION_ID="$2"
+                shift 2
+            else
+                TARGET_SESSION_ID=""
+                shift
+            fi
+            ;;
+        --resume|-r)
+            ACTION="resume"
+            if [[ $# -ge 2 && "$2" != -* ]]; then
+                TARGET_SESSION_ID="$2"
+                shift 2
+            else
+                TARGET_SESSION_ID=""
+                shift
+            fi
+            ;;
+        -y|--yes)
+            shift
+            ;;
+        -*)
+            echo "${COLOR_RED}Unknown option: $1${COLOR_RESET}" >&2
+            echo "Use 'agls --help' for usage instructions." >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$TARGET_WORKSPACE" ]]; then
+                TARGET_WORKSPACE="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+NORMALIZED_WORKSPACE="$(normalize_path "${TARGET_WORKSPACE:-.}")"
+
+# Collect all session JSON lines
+RAW_RECORDS=()
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "claude" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_claude_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "antigravity" || "$AGENT_FILTER" == "agy" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_antigravity_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "opencode" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_opencode_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "codex" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_codex_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "pi" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_pi_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+# Export environment variables for Python processing
+export RAW_DATA_JSON="$(printf "%s\n" "${RAW_RECORDS[@]:-}")"
+export SEARCH_QUERY_ENV="$SEARCH_QUERY"
+export PAGE_ENV="$PAGE"
+export LIMIT_ENV="$LIMIT"
+export OUTPUT_JSON_ENV="$OUTPUT_JSON"
+export TARGET_WS_ENV="$NORMALIZED_WORKSPACE"
+export MATCH_ALL_ENV="$MATCH_ALL"
+export ACTION_ENV="$ACTION"
+export TARGET_ID_ENV="$TARGET_SESSION_ID"
+
+# If Python is available, execute structured handler
+if command -v python3 &>/dev/null; then
+    RESOLVED_ACTION="$(python3 -c "
+import json, os, sys, datetime
+
+raw_input = os.environ.get('RAW_DATA_JSON', '').strip()
+search_q = os.environ.get('SEARCH_QUERY_ENV', '').lower()
+page = max(1, int(os.environ.get('PAGE_ENV', '1')))
+limit = max(1, int(os.environ.get('LIMIT_ENV', '20')))
+output_json = (os.environ.get('OUTPUT_JSON_ENV', 'false').lower() == 'true')
+target_ws = os.environ.get('TARGET_WS_ENV', '')
+match_all = (os.environ.get('MATCH_ALL_ENV', 'false').lower() == 'true')
+action = os.environ.get('ACTION_ENV', 'list')
+target_id_param = os.environ.get('TARGET_ID_ENV', '').strip()
+
+records = []
+if raw_input:
+    for line in raw_input.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+            if search_q:
+                text_to_search = (item.get('id', '') + ' ' + item.get('prompt', '') + ' ' + item.get('workspace', '')).lower()
+                if search_q not in text_to_search:
+                    continue
+            records.append(item)
+        except Exception:
+            continue
+
+def parse_ts(ts_val):
+    if not ts_val:
+        return 0
+    if isinstance(ts_val, (int, float)):
+        return int(ts_val)
+    if str(ts_val).isdigit():
+        v = int(ts_val)
+        return v // 1000 if len(str(ts_val)) > 11 else v
+    try:
+        s = str(ts_val).replace('Z', '+00:00')
+        if '.' in s and ('+' in s or '-' in s[10:]):
+            parts = s.split('.')
+            tz_part = '+' + parts[1].split('+')[1] if '+' in parts[1] else '-' + parts[1].split('-')[1] if '-' in parts[1] else ''
+            s = parts[0] + tz_part
+        dt = datetime.datetime.fromisoformat(s)
+        return int(dt.timestamp())
+    except Exception:
+        return 0
+
+records.sort(key=lambda r: parse_ts(r.get('timestamp')), reverse=True)
+
+# ANSI Colors
+RESET = '\033[0m'
+BOLD = '\033[1m'
+DIM = '\033[2m'
+ORANGE = '\033[38;5;208m'
+CYAN = '\033[38;5;51m'
+GREEN = '\033[38;5;46m'
+BLUE = '\033[38;5;39m'
+PURPLE = '\033[38;5;141m'
+YELLOW = '\033[38;5;226m'
+GRAY = '\033[38;5;244m'
+RED = '\033[38;5;196m'
+
+def format_time(ts_val):
+    sec = parse_ts(ts_val)
+    if sec <= 0:
+        return '-'
+    now = int(datetime.datetime.now().timestamp())
+    diff = max(0, now - sec)
+    if diff < 60:
+        return f'{diff}s ago'
+    elif diff < 3600:
+        return f'{diff // 60}m ago'
+    elif diff < 86400:
+        return f'{diff // 3600}h ago'
+    elif diff < 604800:
+        return f'{diff // 86400}d ago'
+    else:
+        dt = datetime.datetime.fromtimestamp(sec)
+        return dt.strftime('%Y-%m-%d')
+
+def agent_badge(name):
+    n = name.lower()
+    if 'claude' in n:
+        return f'{ORANGE}Claude Code{RESET}'
+    elif 'antigravity' in n:
+        return f'{CYAN}Antigravity{RESET}'
+    elif 'opencode' in n:
+        return f'{GREEN}OpenCode{RESET}'
+    elif 'codex' in n:
+        return f'{BLUE}Codex{RESET}'
+    elif 'pi' in n:
+        return f'{PURPLE}Pi{RESET}'
+    return f'{YELLOW}{name}{RESET}'
+
+def resolve_session(query):
+    if not query:
+        return None
+    if query.isdigit():
+        idx = int(query) - 1
+        if 0 <= idx < len(records):
+            return records[idx]
+    for r in records:
+        if r.get('id', '') == query:
+            return r
+    for r in records:
+        if r.get('id', '').lower().startswith(query.lower()):
+            return r
+    return None
+
+if action in ('show', 'resume'):
+    target_rec = None
+    if target_id_param:
+        target_rec = resolve_session(target_id_param)
+    elif records:
+        verb = 'resume' if action == 'resume' else 'inspect'
+        print(f'\n{BOLD}Select a session to {verb}:{RESET}')
+        for i, r in enumerate(records[:15], 1):
+            print(f'  {CYAN}[{i}]{RESET} {r.get(\"id\", \"\")} ({r.get(\"agent\", \"\")}, {format_time(r.get(\"timestamp\"))}) - {r.get(\"prompt\", \"\")[:40]}')
+        try:
+            choice = input(f'\nEnter number (1-{min(15, len(records))}): ').strip()
+            target_rec = resolve_session(choice)
+        except Exception:
+            sys.exit(0)
+
+    if not target_rec:
+        print(f'{RED}Error: Session \"{target_id_param}\" not found.{RESET}', file=sys.stderr)
+        sys.exit(1)
+
+    print(f'DISPATCH:{action}:{target_rec[\"agent\"]}:{target_rec[\"id\"]}:{target_rec.get(\"workspace\", \"\")}')
+    sys.exit(0)
+
+# Pagination Calculation
+total_found = len(records)
+total_pages = max(1, (total_found + limit - 1) // limit)
+page = min(page, total_pages)
+start_idx = (page - 1) * limit
+end_idx = min(start_idx + limit, total_found)
+page_records = records[start_idx:end_idx]
+
+if output_json:
+    print(json.dumps(page_records, indent=2))
+    sys.exit(0)
+
+if not records:
+    scope = 'all workspaces' if match_all else f'workspace: {BOLD}{target_ws}{RESET}'
+    print(f'\n{GRAY}No active or past agent sessions found for {scope}.{RESET}\n')
+    sys.exit(0)
+
+scope_str = 'All Workspaces' if match_all else target_ws
+page_indicator = f'Page {page}/{total_pages}' if total_pages > 1 else ''
+print(f'\n{BOLD}AGENT SESSIONS{RESET} {DIM}(Workspace: {scope_str}) {page_indicator}{RESET}\n')
+
+col_idx_w = 6
+col_id_w = 38
+col_agent_w = 13
+col_age_w = 11
+col_turns_w = 7
+col_prompt_w = 43
+
+header_line = (
+    f'{BOLD}{GRAY}'
+    f'{\"#\":<{col_idx_w}}'
+    f'{\"SESSION ID\":<{col_id_w}}'
+    f'{\"AGENT\":<{col_agent_w}}'
+    f'{\"UPDATED\":<{col_age_w}}'
+    f'{\"TURNS\":<{col_turns_w}}'
+    f'{\"INITIAL PROMPT / SUMMARY\"}'
+    f'{RESET}'
+)
+separator = f'{DIM}{\"─\" * 118}{RESET}'
+
+print(header_line)
+print(separator)
+
+for offset, r in enumerate(page_records):
+    abs_idx = start_idx + offset + 1
+    sid = r.get('id', '')
+    agent_raw = r.get('agent', '')
+    badge = agent_badge(agent_raw)
+    age = format_time(r.get('timestamp'))
+    turns = str(r.get('turns', 1))
+    
+    prompt = r.get('prompt', '').replace('\n', ' ').strip()
+    if len(prompt) > col_prompt_w:
+        prompt = prompt[:col_prompt_w - 3] + '...'
+    
+    agent_pad = ' ' * max(0, col_agent_w - len(agent_raw))
+    idx_str = f'[{abs_idx}]'
+    
+    print(
+        f'{YELLOW}{idx_str:<{col_idx_w}}{RESET}'
+        f'{CYAN}{sid:<{col_id_w}}{RESET}'
+        f'{badge}{agent_pad}'
+        f'{DIM}{age:<{col_age_w}}{RESET}'
+        f'{turns:<{col_turns_w}}'
+        f'{prompt}'
+    )
+
+print(separator)
+
+# Navigation summary in footer
+if total_pages > 1:
+    range_str = f'{start_idx + 1}-{end_idx} of {total_found}'
+    nav_hints = []
+    if page < total_pages:
+        nav_hints.append(f'Next: {BOLD}agls -p {page + 1}{RESET}')
+    if page > 1:
+        nav_hints.append(f'Prev: {BOLD}agls -p {page - 1}{RESET}')
+    
+    nav_str = '  |  '.join(nav_hints)
+    print(f'{DIM}Showing {range_str} sessions (Page {page}/{total_pages}).{RESET}  {nav_str}')
+else:
+    print(f'{DIM}Showing {total_found} of {total_found} sessions.{RESET}')
+
+print(f'{DIM}Quick Resume: {BOLD}agls -r <#|SESSION_ID>{RESET}  {DIM}Inspect: {BOLD}agls -i <#|SESSION_ID>{RESET}\n')
+")"
+
+    if [[ "$RESOLVED_ACTION" == DISPATCH:* ]]; then
+        IFS=':' read -r _ ACT AGENT_NAME SID SWS <<< "$RESOLVED_ACTION"
+        
+        if [[ "$ACT" == "show" ]]; then
+            if [[ "$AGENT_NAME" == *"Claude"* ]]; then
+                show_claude_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Antigravity"* ]]; then
+                show_antigravity_session "$SID"
+            elif [[ "$AGENT_NAME" == *"OpenCode"* ]]; then
+                show_opencode_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Codex"* ]]; then
+                show_codex_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Pi"* ]]; then
+                show_pi_session "$SID"
+            else
+                echo "${COLOR_RED}Unknown agent: $AGENT_NAME${COLOR_RESET}"
+            fi
+            exit 0
+        fi
+
+        if [[ "$ACT" == "resume" ]]; then
+            echo ""
+            echo "${COLOR_BOLD}Resuming ${AGENT_NAME} Session:${COLOR_RESET} ${COLOR_CYAN}${SID}${COLOR_RESET}"
+            if [[ -n "$SWS" && "$SWS" != "$PWD" ]]; then
+                echo "${COLOR_DIM}Workspace: ${SWS}${COLOR_RESET}"
+            fi
+
+            if [[ "$AGENT_NAME" == *"Claude"* ]]; then
+                cmd="claude --resume $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if [[ -t 0 && -n "$SWS" && -d "$SWS" ]]; then
+                    cd "$SWS"
+                fi
+                if command -v claude &>/dev/null; then
+                    exec claude --resume "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Antigravity"* ]]; then
+                cmd="agy --conversation=$SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v agy &>/dev/null; then
+                    exec agy "--conversation=$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"OpenCode"* ]]; then
+                cmd="opencode -s $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v opencode &>/dev/null; then
+                    exec opencode -s "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Codex"* ]]; then
+                cmd="codex resume $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v codex &>/dev/null; then
+                    exec codex resume "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Pi"* ]]; then
+                cmd="pi --session $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v pi &>/dev/null; then
+                    exec pi --session "$SID"
+                fi
+                exit 0
+            fi
+        fi
+    else
+        echo "$RESOLVED_ACTION"
+    fi
+else
+    echo "Found ${#RAW_RECORDS[@]} session records."
+    for r in "${RAW_RECORDS[@]}"; do
+        echo "$r"
+    done
+fi

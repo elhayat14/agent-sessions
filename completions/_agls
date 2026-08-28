@@ -1,0 +1,36 @@
+#compdef agls agent-sessions
+
+_agls() {
+    local -a commands arguments
+    commands=(
+        'update:Pull latest changes from repository and update agls'
+        'uninstall:Remove agls symlinks and shell completions'
+    )
+    
+    arguments=(
+        '(-p --page)'{-p,--page}'[Page number to display]:page:'
+        '(-n --limit)'{-n,--limit}'[Number of sessions per page]:limit:'
+        '(-a --all)'{-a,--all}'[List sessions across all workspaces]'
+        '--agent[Filter by agent provider]:agent:(claude antigravity opencode codex pi all)'
+        '(-s --search)'{-s,--search}'[Filter sessions containing keyword]:query:'
+        '--json[Output results as JSON]'
+        '(-i --show)'{-i,--show}'[Inspect transcript for a session]:session_id:'
+        '(-r --resume)'{-r,--resume}'[Resume session or print resumption command]:session_id:'
+        '(-y --yes)'{-y,--yes}'[Auto-confirm prompts]'
+        '(-v --version)'{-v,--version}'[Show version]'
+        '(-h --help)'{-h,--help}'[Show help]'
+        '1:subcommand or workspace:->cmd_or_dir'
+        '*:workspace directory:_files -/'
+    )
+
+    _arguments -s $arguments
+
+    case "$state" in
+        cmd_or_dir)
+            _describe -t commands 'agls commands' commands
+            _files -/
+            ;;
+    esac
+}
+
+_agls "$@"
