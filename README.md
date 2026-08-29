@@ -1,5 +1,6 @@
 # `agls` — AI Agent Sessions CLI
 
+[![Version: 1.0.0](https://img.shields.io/badge/Version-1.0.0-success.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: macOS / Linux / WSL](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20WSL-blue.svg)]()
 [![Shell: Bash / Zsh](https://img.shields.io/badge/Shell-Bash%20%7C%20Zsh-green.svg)]()
@@ -189,6 +190,11 @@ OPTIONS:
 | **OpenCode** | `~/.local/share/opencode/` | Workspace state DBs & JSON session logs |
 | **Codex** | `~/.codex/sessions/` | JSON & JSONL session files with workspace metadata |
 | **Pi Agent** | `~/.pi/agent/sessions/` | JSON & JSONL session files with workspace metadata |
+
+---
+
+## 📜 Changelog
+See [CHANGELOG.md](CHANGELOG.md) for full release history and notes.
 
 ---
 
