@@ -213,7 +213,7 @@ OPTIONS:
 | Agent Harness | Storage Directory | Workspace Resolution |
 | :--- | :--- | :--- |
 | **Claude Code** | `~/.claude/projects/` | Path-slug encoded folder names (e.g. `-Users-name-work-app`) |
-| **Antigravity** | `~/.gemini/antigravity/brain/` | Conversation log traces, metadata, and tool execution CWDs |
+| **Antigravity** | `~/.gemini/antigravity*/brain/` (`antigravity`, `antigravity-cli`, `antigravity-ide`) | Conversation log traces, metadata, and tool execution CWDs |
 | **OpenCode** | `~/.local/share/opencode/` | Workspace state DBs & JSON session logs |
 | **Codex** | `~/.codex/sessions/` | JSON & JSONL session files with workspace metadata |
 | **Pi Agent** | `~/.pi/agent/sessions/` | JSON & JSONL session files with workspace metadata |

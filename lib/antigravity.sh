@@ -6,9 +6,15 @@
 ANTIGRAVITY_DIR="${ANTIGRAVITY_HOME:-$HOME/.gemini/antigravity}"
 ANTIGRAVITY_BRAIN_DIR="$ANTIGRAVITY_DIR/brain"
 ANTIGRAVITY_CLI_DIRS=(
-    "$HOME/.gemini/antigravity-cli"
-    "$HOME/.gemini/antigravity"
-    "$HOME/.config/antigravity"
+    "$HOME/.gemini/antigravity/brain"
+    "$HOME/.gemini/antigravity-cli/brain"
+    "$HOME/.gemini/antigravity-ide/brain"
+    "$HOME/.gemini/antigravity/sessions"
+    "$HOME/.gemini/antigravity-cli/sessions"
+    "$HOME/.gemini/antigravity-ide/sessions"
+    "$HOME/.config/antigravity/brain"
+    "$HOME/.config/antigravity-cli/brain"
+    "$HOME/.config/antigravity-ide/brain"
 )
 
 # Parse all Antigravity conversations (IDE & CLI) and filter by workspace
@@ -21,14 +27,19 @@ list_antigravity_sessions() {
         python3 -c "
 import json, os, sys, glob, re
 
-target_ws = os.path.normpath(sys.argv[1])
+target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 match_all = (sys.argv[2].lower() == 'true')
 
 brain_dirs = [
     os.path.expanduser('~/.gemini/antigravity/brain'),
     os.path.expanduser('~/.gemini/antigravity-cli/brain'),
+    os.path.expanduser('~/.gemini/antigravity-ide/brain'),
+    os.path.expanduser('~/.gemini/antigravity/sessions'),
     os.path.expanduser('~/.gemini/antigravity-cli/sessions'),
-    os.path.expanduser('~/.config/antigravity/brain')
+    os.path.expanduser('~/.gemini/antigravity-ide/sessions'),
+    os.path.expanduser('~/.config/antigravity/brain'),
+    os.path.expanduser('~/.config/antigravity-cli/brain'),
+    os.path.expanduser('~/.config/antigravity-ide/brain')
 ]
 
 seen_ids = set()
@@ -58,40 +69,39 @@ for bdir in brain_dirs:
         conv_id = os.path.basename(conv_dir)
         if conv_id in seen_ids or conv_id in ('scratch', 'builtin', 'cache', 'logs'):
             continue
-        
-        # Check transcripts
-        log_dir = os.path.join(conv_dir, '.system_generated', 'logs')
-        transcript_file = os.path.join(log_dir, 'transcript.jsonl')
-        if not os.path.exists(transcript_file):
-            transcript_file = os.path.join(log_dir, 'transcript_full.jsonl')
-        if not os.path.exists(transcript_file):
-            # Check for direct json/jsonl in directory (CLI sessions)
-            candidates = glob.glob(os.path.join(conv_dir, '*.json*'))
-            if candidates:
-                transcript_file = candidates[0]
-            else:
-                continue
 
-        turns = 0
-        first_prompt = ''
-        created_at = ''
-        updated_at = ''
-        session_workspaces = set()
+        transcript_file = os.path.join(conv_dir, '.system_generated', 'logs', 'transcript.jsonl')
+        if not os.path.isfile(transcript_file):
+            transcript_file = os.path.join(conv_dir, '.system_generated', 'logs', 'transcript_full.jsonl')
+        if not os.path.isfile(transcript_file):
+            candidate_files = glob.glob(os.path.join(conv_dir, '**', '*.json*'), recursive=True)
+            if candidate_files:
+                transcript_file = candidate_files[0]
 
-        # Check metadata.json if present
-        meta_file = os.path.join(conv_dir, 'metadata.json')
-        if os.path.exists(meta_file):
-            try:
-                with open(meta_file, 'r', encoding='utf-8') as mf:
-                    mdata = json.load(mf)
-                    if 'workspace' in mdata:
-                        session_workspaces.add(os.path.normpath(mdata['workspace']))
-                    if 'created_at' in mdata:
-                        created_at = str(mdata['created_at'])
-            except Exception:
-                pass
+        if not os.path.isfile(transcript_file):
+            continue
 
         try:
+            turns = 0
+            first_prompt = ''
+            created_at = ''
+            updated_at = ''
+            session_workspaces = set()
+
+            meta_file = os.path.join(conv_dir, 'metadata.json')
+            if os.path.isfile(meta_file):
+                try:
+                    with open(meta_file, 'r', encoding='utf-8') as mf:
+                        mdata = json.load(mf)
+                        if 'workspace' in mdata and mdata['workspace']:
+                            session_workspaces.add(os.path.normpath(mdata['workspace']))
+                        if 'created_at' in mdata and mdata['created_at']:
+                            created_at = str(mdata['created_at'])
+                        if 'summary' in mdata and mdata['summary']:
+                            first_prompt = clean_text(mdata['summary'])
+                except Exception:
+                    pass
+
             mtime = int(os.path.getmtime(transcript_file))
             if not created_at:
                 created_at = str(mtime)
@@ -110,7 +120,6 @@ for bdir in brain_dirs:
                         if ts:
                             updated_at = str(ts)
 
-                        # Check tool calls for workspace directory
                         tool_calls = data.get('tool_calls') or []
                         for tc in tool_calls:
                             args = tc.get('args') or tc.get('parameters') or {}
@@ -120,7 +129,6 @@ for bdir in brain_dirs:
                                     dir_path = val if (key in ('Cwd', 'SearchDirectory', 'SearchPath') or os.path.isdir(val)) else os.path.dirname(val)
                                     session_workspaces.add(os.path.normpath(dir_path))
 
-                        # Check content for workspace mentions (e.g. user_information block)
                         raw_content = data.get('content') or ''
                         if isinstance(raw_content, str) and '/Users/' in raw_content:
                             matches = re.findall(r'(\/(?:Users|home)\/[a-zA-Z0-9_\-\.\/]+)', raw_content)
@@ -128,7 +136,6 @@ for bdir in brain_dirs:
                                 if os.path.isdir(m) and not m.endswith('/.gemini') and not m.endswith('/scratch'):
                                     session_workspaces.add(os.path.normpath(m))
 
-                        # Check prompt content
                         if not first_prompt and (data.get('type') in ('USER_INPUT', 'user') or data.get('source') == 'USER_EXPLICIT'):
                             txt = clean_text(raw_content)
                             if txt and not txt.startswith('<system_message>'):
@@ -177,8 +184,15 @@ show_antigravity_session() {
     local conv_dir=""
     local brain_dirs=(
         "$ANTIGRAVITY_BRAIN_DIR"
+        "$HOME/.gemini/antigravity/brain"
         "$HOME/.gemini/antigravity-cli/brain"
+        "$HOME/.gemini/antigravity-ide/brain"
+        "$HOME/.gemini/antigravity/sessions"
         "$HOME/.gemini/antigravity-cli/sessions"
+        "$HOME/.gemini/antigravity-ide/sessions"
+        "$HOME/.config/antigravity/brain"
+        "$HOME/.config/antigravity-cli/brain"
+        "$HOME/.config/antigravity-ide/brain"
     )
 
     for bdir in "${brain_dirs[@]}"; do
