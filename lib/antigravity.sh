@@ -25,7 +25,7 @@ list_antigravity_sessions() {
 
     if command -v python3 &>/dev/null; then
         python3 -c "
-import json, os, sys, glob, re
+import json, os, sys, glob, re, collections
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 match_all = (sys.argv[2].lower() == 'true')
@@ -42,6 +42,15 @@ brain_dirs = [
     os.path.expanduser('~/.config/antigravity-ide/brain')
 ]
 
+home_dir = os.path.expanduser('~')
+GENERIC_DIRS = {
+    home_dir,
+    os.path.join(home_dir, 'Documents'),
+    os.path.join(home_dir, 'Desktop'),
+    os.path.join(home_dir, 'Downloads'),
+    '/Users', '/home', '/'
+}
+
 seen_ids = set()
 
 def clean_text(val):
@@ -53,8 +62,8 @@ def clean_text(val):
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
-        s = re.sub(r'<\/?USER_REQUEST>', '', s)
         s = re.sub(r'<\/?command-message>', '', s)
+        s = re.sub(r'<\/?USER_REQUEST>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
@@ -90,7 +99,7 @@ for bdir in brain_dirs:
             first_prompt = ''
             created_at = ''
             updated_at = ''
-            session_workspaces = set()
+            ws_scores = collections.defaultdict(int)
 
             meta_file = os.path.join(conv_dir, 'metadata.json')
             if os.path.isfile(meta_file):
@@ -98,7 +107,8 @@ for bdir in brain_dirs:
                     with open(meta_file, 'r', encoding='utf-8') as mf:
                         mdata = json.load(mf)
                         if 'workspace' in mdata and mdata['workspace']:
-                            session_workspaces.add(os.path.normpath(mdata['workspace']))
+                            p = os.path.normpath(mdata['workspace'])
+                            ws_scores[p] += 50
                         if 'created_at' in mdata and mdata['created_at']:
                             created_at = str(mdata['created_at'])
                         if 'summary' in mdata and mdata['summary']:
@@ -131,15 +141,11 @@ for bdir in brain_dirs:
                                 val = args.get(key)
                                 if val and isinstance(val, str) and val.startswith('/'):
                                     dir_path = val if (key in ('Cwd', 'SearchDirectory', 'SearchPath') or os.path.isdir(val)) else os.path.dirname(val)
-                                    session_workspaces.add(os.path.normpath(dir_path))
+                                    p = os.path.normpath(dir_path)
+                                    weight = 10 if key == 'Cwd' else 3
+                                    ws_scores[p] += weight
 
                         raw_content = data.get('content') or ''
-                        if isinstance(raw_content, str) and '/Users/' in raw_content:
-                            matches = re.findall(r'(\/(?:Users|home)\/[a-zA-Z0-9_\-\.\/]+)', raw_content)
-                            for m in matches:
-                                if os.path.isdir(m) and not m.endswith('/.gemini') and not m.endswith('/scratch'):
-                                    session_workspaces.add(os.path.normpath(m))
-
                         if not first_prompt and (data.get('type') in ('USER_INPUT', 'user') or data.get('source') == 'USER_EXPLICIT'):
                             txt = clean_text(raw_content)
                             if txt and not txt.startswith('<system_message>'):
@@ -147,19 +153,31 @@ for bdir in brain_dirs:
                     except Exception:
                         continue
 
-            is_match = False
-            matched_ws = target_ws
+            # Filter out non-existent directories or internal temp paths
+            valid_candidates = []
+            for p, score in ws_scores.items():
+                if os.path.isdir(p) and not p.endswith('/.gemini') and not '/.gemini/' in p and not p.endswith('/scratch'):
+                    valid_candidates.append((p, score))
 
+            # Filter out generic home/Documents folders if specific project paths exist
+            specific_candidates = [(p, sc) for p, sc in valid_candidates if p not in GENERIC_DIRS]
+            candidates = specific_candidates if specific_candidates else valid_candidates
+
+            resolved_ws = target_ws
+            if candidates:
+                # Pick the most frequently used / deepest path
+                candidates.sort(key=lambda item: (item[1], len(item[0])), reverse=True)
+                resolved_ws = candidates[0][0]
+
+            is_match = False
             if match_all:
                 is_match = True
-                if session_workspaces:
-                    matched_ws = sorted(list(session_workspaces), key=len)[0]
             else:
-                for ws in session_workspaces:
-                    w_norm = os.path.normpath(ws).rstrip('/')
-                    if w_norm == target_ws or target_ws.startswith(w_norm + '/'):
+                for p, _ in candidates:
+                    p_norm = os.path.normpath(p).rstrip('/')
+                    if p_norm == target_ws or target_ws.startswith(p_norm + '/'):
                         is_match = True
-                        matched_ws = w_norm
+                        resolved_ws = p_norm
                         break
 
             if is_match:
@@ -171,7 +189,7 @@ for bdir in brain_dirs:
                     'id': conv_id,
                     'agent': 'Antigravity',
                     'timestamp': updated_at or created_at,
-                    'workspace': matched_ws,
+                    'workspace': resolved_ws,
                     'turns': turns,
                     'prompt': first_prompt[:150]
                 }
@@ -238,8 +256,13 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
-        return s.strip()
+        return re.sub(r'\s+', ' ', s).strip()
     return str(val)
 
 tfile = sys.argv[1]

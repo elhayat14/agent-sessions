@@ -6,19 +6,6 @@
 CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
 CLAUDE_PROJECTS_DIR="$CLAUDE_DIR/projects"
 
-# Generate expected directory slug for a given workspace path
-claude_path_to_slug() {
-    local ws_path="$1"
-    ws_path="${ws_path%/}"
-    echo "$ws_path" | sed 's/\//-/g'
-}
-
-# Reverse slug to workspace path
-claude_slug_to_path() {
-    local slug="$1"
-    echo "$slug" | sed 's/^-/\//' | sed 's/-/\//g'
-}
-
 # Find all matching project directories for target workspace
 get_claude_project_dirs() {
     local target_ws="$1"
@@ -33,32 +20,43 @@ get_claude_project_dirs() {
         return
     fi
 
-    local expected_slug
-    expected_slug="$(claude_path_to_slug "$target_ws")"
-    
-    # 1. Exact match with leading dash
-    if [[ -d "$CLAUDE_PROJECTS_DIR/$expected_slug" ]]; then
-        echo "$CLAUDE_PROJECTS_DIR/$expected_slug"
-        return
-    fi
+    if command -v python3 &>/dev/null; then
+        python3 -c "
+import os, sys
 
-    # 2. Exact match without leading dash
-    local alt_slug="${expected_slug#-}"
-    if [[ -d "$CLAUDE_PROJECTS_DIR/$alt_slug" ]]; then
-        echo "$CLAUDE_PROJECTS_DIR/$alt_slug"
-        return
-    fi
+target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
+projects_dir = sys.argv[2]
 
-    # 3. Check if target_ws is a subdirectory of a known project workspace
-    for pdir in "$CLAUDE_PROJECTS_DIR"/*; do
-        if [[ -d "$pdir" ]]; then
-            local slug="$(basename "$pdir")"
-            local p_ws="$(claude_slug_to_path "$slug")"
-            if [[ -n "$p_ws" && "$target_ws" == "$p_ws"/* ]]; then
-                echo "$pdir"
-            fi
-        fi
-    done
+def slug_to_real_path(slug):
+    parts = [p for p in slug.split('-') if p]
+    if not parts:
+        return ''
+    current = '/' + parts[0]
+    i = 1
+    while i < len(parts):
+        found = False
+        for j in range(len(parts), i, -1):
+            candidate_name = '-'.join(parts[i:j])
+            candidate_path = os.path.join(current, candidate_name)
+            if os.path.isdir(candidate_path):
+                current = candidate_path
+                i = j
+                found = True
+                break
+        if not found:
+            current = os.path.join(current, parts[i])
+            i += 1
+    return current
+
+if os.path.isdir(projects_dir):
+    for entry in os.scandir(projects_dir):
+        if entry.is_dir():
+            real_path = slug_to_real_path(entry.name)
+            r_norm = os.path.normpath(real_path).rstrip('/')
+            if r_norm == target_ws or target_ws.startswith(r_norm + '/'):
+                print(entry.path)
+" "$target_ws" "$CLAUDE_PROJECTS_DIR"
+    fi
 }
 
 # Parse all Claude sessions for target workspace
@@ -78,9 +76,6 @@ list_claude_sessions() {
         
         local slug
         slug="$(basename "$pdir")"
-        local recorded_ws
-        recorded_ws="$(claude_slug_to_path "$slug")"
-        [[ ! -d "$recorded_ws" ]] && recorded_ws="$target_ws"
 
         for sfile in "$pdir"/*.jsonl "$pdir"/*.json; do
             [[ ! -f "$sfile" ]] && continue
@@ -95,7 +90,31 @@ import json, os, sys, re
 
 sfile = sys.argv[1]
 session_id = sys.argv[2]
-workspace = sys.argv[3]
+slug = sys.argv[3]
+target_ws = sys.argv[4]
+
+def slug_to_real_path(s):
+    parts = [p for p in s.split('-') if p]
+    if not parts:
+        return ''
+    current = '/' + parts[0]
+    i = 1
+    while i < len(parts):
+        found = False
+        for j in range(len(parts), i, -1):
+            candidate_name = '-'.join(parts[i:j])
+            candidate_path = os.path.join(current, candidate_name)
+            if os.path.isdir(candidate_path):
+                current = candidate_path
+                i = j
+                found = True
+                break
+        if not found:
+            current = os.path.join(current, parts[i])
+            i += 1
+    return current
+
+workspace = slug_to_real_path(slug)
 
 turns = 0
 first_prompt = ''
@@ -148,6 +167,10 @@ try:
                 data = json.loads(line)
                 turns += 1
                 
+                # Check for explicit cwd in log
+                if 'cwd' in data and data['cwd'] and os.path.isdir(data['cwd']):
+                    workspace = os.path.normpath(data['cwd'])
+
                 ts = data.get('timestamp') or data.get('created_at') or data.get('time')
                 if ts and not updated_at:
                     timestamp = str(ts)
@@ -175,14 +198,14 @@ try:
         'id': session_id,
         'agent': 'Claude Code',
         'timestamp': updated_at or timestamp,
-        'workspace': workspace,
+        'workspace': workspace or target_ws,
         'turns': turns,
         'prompt': first_prompt[:200]
     }
     print(json.dumps(out))
 except Exception:
     pass
-" "$sfile" "$session_id" "$recorded_ws" 2>/dev/null
+" "$sfile" "$session_id" "$slug" "$target_ws" 2>/dev/null
             fi
         done
     done <<< "$proj_dirs"
@@ -215,9 +238,13 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
-        return s.strip()
+        return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         parts = []
         for item in val:
