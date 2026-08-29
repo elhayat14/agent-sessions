@@ -22,12 +22,24 @@ get_claude_project_dirs() {
 
     if command -v python3 &>/dev/null; then
         python3 -c "
-import os, sys
+import os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
 projects_dir = sys.argv[2]
 
-def slug_to_real_path(slug):
+def resolve_project_dir_to_ws(pdir):
+    for sfile in glob.glob(os.path.join(pdir, '*.json*')):
+        try:
+            with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if '\"cwd\":' in line:
+                        m = re.search(r'\"cwd\"\s*:\s*\"([^\"]+)\"', line)
+                        if m and os.path.isdir(m.group(1)):
+                            return os.path.normpath(m.group(1))
+        except Exception:
+            pass
+    
+    slug = os.path.basename(pdir)
     parts = [p for p in slug.split('-') if p]
     if not parts:
         return ''
@@ -35,14 +47,15 @@ def slug_to_real_path(slug):
     i = 1
     while i < len(parts):
         found = False
-        for j in range(len(parts), i, -1):
-            candidate_name = '-'.join(parts[i:j])
-            candidate_path = os.path.join(current, candidate_name)
-            if os.path.isdir(candidate_path):
-                current = candidate_path
-                i = j
-                found = True
-                break
+        if os.path.isdir(current):
+            entries = {e.name.replace('_', '-').lower(): e.name for e in os.scandir(current) if e.is_dir()}
+            for j in range(len(parts), i, -1):
+                candidate_slug = '-'.join(parts[i:j]).lower()
+                if candidate_slug in entries:
+                    current = os.path.join(current, entries[candidate_slug])
+                    i = j
+                    found = True
+                    break
         if not found:
             current = os.path.join(current, parts[i])
             i += 1
@@ -51,9 +64,9 @@ def slug_to_real_path(slug):
 if os.path.isdir(projects_dir):
     for entry in os.scandir(projects_dir):
         if entry.is_dir():
-            real_path = slug_to_real_path(entry.name)
+            real_path = resolve_project_dir_to_ws(entry.path)
             r_norm = os.path.normpath(real_path).rstrip('/')
-            # Option B: Match exact project or subdirectories inside target workspace
+            # Match exact project or subdirectories inside target workspace
             if r_norm == target_ws or r_norm.startswith(target_ws + '/'):
                 print(entry.path)
 " "$target_ws" "$CLAUDE_PROJECTS_DIR"
@@ -87,36 +100,49 @@ list_claude_sessions() {
 
             if command -v python3 &>/dev/null; then
                 python3 -c "
-import json, os, sys, re
+import json, os, sys, re, glob
 
 sfile = sys.argv[1]
 session_id = sys.argv[2]
 slug = sys.argv[3]
 target_ws = os.path.normpath(sys.argv[4]).rstrip('/')
 match_all = (sys.argv[5].lower() == 'true')
+pdir = os.path.dirname(sfile)
 
-def slug_to_real_path(s):
-    parts = [p for p in s.split('-') if p]
+def resolve_project_dir_to_ws(pd):
+    for sf in glob.glob(os.path.join(pd, '*.json*')):
+        try:
+            with open(sf, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if '\"cwd\":' in line:
+                        m = re.search(r'\"cwd\"\s*:\s*\"([^\"]+)\"', line)
+                        if m and os.path.isdir(m.group(1)):
+                            return os.path.normpath(m.group(1))
+        except Exception:
+            pass
+    
+    parts = [p for p in slug.split('-') if p]
     if not parts:
         return ''
     current = '/' + parts[0]
     i = 1
     while i < len(parts):
         found = False
-        for j in range(len(parts), i, -1):
-            candidate_name = '-'.join(parts[i:j])
-            candidate_path = os.path.join(current, candidate_name)
-            if os.path.isdir(candidate_path):
-                current = candidate_path
-                i = j
-                found = True
-                break
+        if os.path.isdir(current):
+            entries = {e.name.replace('_', '-').lower(): e.name for e in os.scandir(current) if e.is_dir()}
+            for j in range(len(parts), i, -1):
+                candidate_slug = '-'.join(parts[i:j]).lower()
+                if candidate_slug in entries:
+                    current = os.path.join(current, entries[candidate_slug])
+                    i = j
+                    found = True
+                    break
         if not found:
             current = os.path.join(current, parts[i])
             i += 1
     return current
 
-workspace = slug_to_real_path(slug)
+workspace = resolve_project_dir_to_ws(pdir)
 
 turns = 0
 first_prompt = ''
@@ -135,6 +161,7 @@ def clean_text(val):
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         parts = []
@@ -232,8 +259,7 @@ show_claude_session() {
         return 1
     fi
 
-    local actual_id
-    actual_id="$(basename "${found_file%.*}")"
+    local actual_id="$(basename "${found_file%.*}")"
     echo -e "${COLOR_BOLD}${COLOR_ORANGE}=== Claude Code Session: ${actual_id} ===${COLOR_RESET}"
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
@@ -253,6 +279,7 @@ def clean_text(val):
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         parts = []
@@ -271,8 +298,6 @@ def clean_text(val):
             return clean_text(val['text'])
         if 'message' in val:
             return clean_text(val['message'])
-        if 'prompt' in val:
-            return clean_text(val['prompt'])
     return str(val)
 
 sfile = sys.argv[1]
