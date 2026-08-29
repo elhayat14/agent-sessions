@@ -49,9 +49,13 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
         s = re.sub(r'<\/?command-message>', '', s)
-        return s.strip()
+        return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
     if isinstance(val, dict):

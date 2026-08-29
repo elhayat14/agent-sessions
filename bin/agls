@@ -512,12 +512,11 @@ scope_str = 'All Workspaces' if match_all else target_ws
 page_indicator = f'Page {page}/{total_pages}' if total_pages > 1 else ''
 print(f'\n{BOLD}AGENT SESSIONS{RESET} {DIM}(Workspace: {scope_str}) {page_indicator}{RESET}\n')
 
-col_idx_w = 6
+col_idx_w = 7
 col_id_w = 38
 col_agent_w = 13
 col_age_w = 11
 col_turns_w = 7
-col_prompt_w = 43
 
 header_line = (
     f'{BOLD}{GRAY}'
@@ -525,14 +524,15 @@ header_line = (
     f'{\"SESSION ID\":<{col_id_w}} '
     f'{\"AGENT\":<{col_agent_w}} '
     f'{\"UPDATED\":<{col_age_w}} '
-    f'{\"TURNS\":<{col_turns_w}} '
-    f'{\"INITIAL PROMPT / SUMMARY\"}'
+    f'{\"TURNS\":<{col_turns_w}}'
     f'{RESET}'
 )
-separator = f'{DIM}{\"─\" * 122}{RESET}'
+separator = f'{DIM}{\"─\" * 80}{RESET}'
 
 print(header_line)
 print(separator)
+
+home_dir = os.path.expanduser('~')
 
 for offset, r in enumerate(page_records):
     abs_idx = start_idx + offset + 1
@@ -544,21 +544,29 @@ for offset, r in enumerate(page_records):
     age = format_time(r.get('timestamp'))
     turns = str(r.get('turns', 1))
     
+    ws = r.get('workspace', '').strip()
+    if ws.startswith(home_dir):
+        ws_short = '~' + ws[len(home_dir):]
+    else:
+        ws_short = ws or '~'
+    
     prompt = r.get('prompt', '').replace('\n', ' ').strip()
-    if len(prompt) > col_prompt_w:
-        prompt = prompt[:col_prompt_w - 3] + '...'
+    if len(prompt) > 80:
+        prompt = prompt[:77] + '...'
     
     agent_pad = ' ' * max(0, col_agent_w - len(agent_raw))
     idx_str = f'[{abs_idx}]'
     
+    # Line 1: Session ID & metadata
     print(
         f'{YELLOW}{idx_str:<{col_idx_w}}{RESET} '
         f'{CYAN}{sid:<{col_id_w}}{RESET} '
         f'{badge}{agent_pad} '
         f'{DIM}{age:<{col_age_w}}{RESET} '
-        f'{turns:<{col_turns_w}} '
-        f'{prompt}'
+        f'{turns:<{col_turns_w}}'
     )
+    # Line 2: Workspace path & prompt summary
+    print(f'       {DIM}📂 {ws_short}{RESET}  {DIM}•{RESET}  \"{prompt}\"')
 
 print(separator)
 

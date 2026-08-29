@@ -10,17 +10,22 @@
 Supports **Claude Code**, **Antigravity IDE & CLI (`agy`)**, **OpenCode**, **Codex**, and **Pi Agent**.
 
 ```
-AGENT SESSIONS (Workspace: /Users/username/projects/my-app) Page 1/3
+AGENT SESSIONS (Workspace: All Workspaces) Page 1/3
 
-#     SESSION ID                             AGENT         UPDATED     TURNS   INITIAL PROMPT / SUMMARY
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[1]   498f6e24-9b26-4b1a-8c5e-7a2e8e7f1234   Claude Code   11m ago     35      Implement rate-limiting middleware in Express...
-[2]   b834d95d-7b04-469c-861d-f3afcd204bd0   Antigravity   2h ago      48      Fix JWT authentication expiry bug in auth service...
-[3]   ses_001ec48a-1294-4d82-951b-0291ba81   OpenCode      1d ago      12      Add unit tests for payment controller...
-[4]   cdx_7a8b9c1d-3e2f-4a5b-9c8d-1e2f3a4b   Codex         2d ago      18      Refactor database migration scripts...
-[5]   pi_98765432-10fe-dcba-9876-543210fed   Pi            3d ago      8       Research OAuth2 PKCE best practices...
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Showing 1-20 of 48 sessions (Page 1/3).  Next: agls -p 2
+#       SESSION ID                             AGENT         UPDATED     TURNS  
+────────────────────────────────────────────────────────────────────────────────
+[1]     498f6e24-9b26-4b1a-8c5e-7a2e8e7f1234   Claude Code   11m ago     35
+       📂 ~/projects/my-app  •  "Implement rate-limiting middleware in Express"
+[2]     b834d95d-7b04-469c-861d-f3afcd204bd0   Antigravity   2h ago      48
+       📂 ~/projects/auth-svc •  "Fix JWT authentication expiry bug in auth service"
+[3]     ses_001ec48a-1294-4d82-951b-0291ba81   OpenCode      1d ago      12
+       📂 ~/work/payment-api  •  "Add unit tests for payment controller"
+[4]     cdx_7a8b9c1d-3e2f-4a5b-9c8d-1e2f3a4b   Codex         2d ago      18
+       📂 ~/projects/db-core  •  "Refactor database migration scripts"
+[5]     pi_98765432-10fe-dcba-9876-543210fed   Pi            3d ago      8
+       📂 ~/research/oauth    •  "Research OAuth2 PKCE best practices"
+────────────────────────────────────────────────────────────────────────────────
+Showing 1-5 of 48 sessions (Page 1/3).  Next: agls -p 2
 Quick Resume: agls -r <#|SESSION_ID>  Inspect: agls -i <#|SESSION_ID>
 ```
 
