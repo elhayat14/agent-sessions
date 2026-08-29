@@ -138,14 +138,16 @@ for base_dir in search_dirs:
             created_at = ''
             updated_at = ''
 
+            # First, try parsing as single JSON if single line
+            is_single = False
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read().strip()
-                if not content:
-                    continue
-
-                if content.startswith('{') and content.endswith('}'):
+                first_char = f.read(1)
+                f.seek(0)
+                if first_char == '{':
                     try:
+                        content = f.read()
                         data = json.loads(content)
+                        is_single = True
                         sid = data.get('session_id') or data.get('id')
                         if sid:
                             clean_id = str(sid)
@@ -166,9 +168,11 @@ for base_dir in search_dirs:
                                     if txt:
                                         first_prompt = txt
                     except Exception:
-                        pass
-                else:
-                    for line in content.split('\n'):
+                        is_single = False
+
+            if not is_single:
+                with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
                         line = line.strip()
                         if not line:
                             continue
@@ -283,26 +287,28 @@ def clean_text(val):
     return str(val)
 
 sfile = sys.argv[1]
-with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
-    content = f.read().strip()
-    if content.startswith('{') and content.endswith('}'):
-        try:
-            data = json.loads(content)
-            msgs = data.get('messages') or data.get('turns') or []
-            for step, m in enumerate(msgs, 1):
-                role = m.get('role') or 'event'
-                txt = clean_text(m.get('content') or m.get('text') or '')
-                if role in ('user', 'human') and txt:
-                    print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
-                    print(f'{txt}\n')
-                elif role in ('assistant', 'model', 'agent') and txt:
-                    print(f'\033[1;38;5;39m[Turn {step} - Codex]\033[0m')
-                    print(f'{txt}\n')
-        except Exception:
-            print(content)
-    else:
+is_single = False
+try:
+    with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+        data = json.loads(f.read())
+        is_single = True
+        msgs = data.get('messages') or data.get('turns') or []
+        for step, m in enumerate(msgs, 1):
+            role = m.get('role') or 'event'
+            txt = clean_text(m.get('content') or m.get('text') or '')
+            if role in ('user', 'human') and txt:
+                print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
+                print(f'{txt}\n')
+            elif role in ('assistant', 'model', 'agent') and txt:
+                print(f'\033[1;38;5;39m[Turn {step} - Codex]\033[0m')
+                print(f'{txt}\n')
+except Exception:
+    is_single = False
+
+if not is_single:
+    with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
         step = 1
-        for line in content.split('\n'):
+        for line in f:
             line = line.strip()
             if not line:
                 continue

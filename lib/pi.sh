@@ -76,14 +76,15 @@ for base_dir in pi_dirs:
             created_at = ''
             updated_at = ''
 
+            is_single = False
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read().strip()
-                if not content:
-                    continue
-
-                if content.startswith('{') and content.endswith('}'):
+                first_char = f.read(1)
+                f.seek(0)
+                if first_char == '{':
                     try:
+                        content = f.read()
                         data = json.loads(content)
+                        is_single = True
                         sid = data.get('session_id') or data.get('id') or session_id
                         sws = data.get('workspace') or data.get('cwd') or data.get('project_path') or ''
                         first_prompt = clean_text(data.get('prompt') or data.get('title') or data.get('initial_prompt') or '')
@@ -100,8 +101,9 @@ for base_dir in pi_dirs:
                                         first_prompt = clean_text(m.get('content') or m.get('text') or '')
                                         break
                     except Exception:
-                        pass
-                else:
+                        is_single = False
+
+            if not is_single:
                     for line in content.split('\n'):
                         line = line.strip()
                         if not line:
