@@ -15,6 +15,8 @@ ANTIGRAVITY_CLI_DIRS=(
     "$HOME/.config/antigravity/brain"
     "$HOME/.config/antigravity-cli/brain"
     "$HOME/.config/antigravity-ide/brain"
+    "$HOME/.gemini/tmp"
+    "$HOME/.gemini/history"
 )
 
 # Parse all Antigravity conversations (IDE & CLI) and filter by workspace
@@ -58,12 +60,14 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<session_context>.*?</session_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
@@ -71,6 +75,7 @@ def clean_text(val):
         return clean_text(val.get('content') or val.get('text') or '')
     return str(val)
 
+# 1. Check brain / session directories
 for bdir in brain_dirs:
     if not os.path.isdir(bdir):
         continue
@@ -137,13 +142,15 @@ for bdir in brain_dirs:
                         tool_calls = data.get('tool_calls') or []
                         for tc in tool_calls:
                             args = tc.get('args') or tc.get('parameters') or {}
-                            for key in ('Cwd', 'SearchDirectory', 'SearchPath', 'TargetFile', 'AbsolutePath'):
+                            for key in ('DirectoryPath', 'Cwd', 'SearchDirectory', 'SearchPath', 'TargetFile', 'AbsolutePath'):
                                 val = args.get(key)
-                                if val and isinstance(val, str) and val.startswith('/'):
-                                    dir_path = val if (key in ('Cwd', 'SearchDirectory', 'SearchPath') or os.path.isdir(val)) else os.path.dirname(val)
-                                    p = os.path.normpath(dir_path)
-                                    weight = 10 if key == 'Cwd' else 3
-                                    ws_scores[p] += weight
+                                if val and isinstance(val, str):
+                                    val = val.strip('\"\'')
+                                    if val.startswith('/'):
+                                        dir_path = val if (key in ('DirectoryPath', 'Cwd', 'SearchDirectory', 'SearchPath') or os.path.isdir(val)) else os.path.dirname(val)
+                                        p = os.path.normpath(dir_path)
+                                        weight = 10 if key in ('Cwd', 'DirectoryPath') else 3
+                                        ws_scores[p] += weight
 
                         raw_content = data.get('content') or ''
                         if not first_prompt and (data.get('type') in ('USER_INPUT', 'user') or data.get('source') == 'USER_EXPLICIT'):
@@ -192,6 +199,72 @@ for bdir in brain_dirs:
                 print(json.dumps(out))
         except Exception:
             continue
+
+# 2. Check Gemini CLI projects.json & tmp/*/chats
+projects_file = os.path.expanduser('~/.gemini/projects.json')
+if os.path.isfile(projects_file):
+    try:
+        with open(projects_file, 'r', encoding='utf-8') as pf:
+            proj_map = json.load(pf).get('projects', {})
+            for ws_path, slug in proj_map.items():
+                ws_norm = os.path.normpath(ws_path).rstrip('/')
+                is_proj_match = match_all or (ws_norm == target_ws) or ws_norm.startswith(target_ws + '/')
+                if not is_proj_match:
+                    continue
+
+                chat_patterns = [
+                    os.path.expanduser(f'~/.gemini/tmp/{slug}/chats/*.jsonl'),
+                    os.path.expanduser(f'~/.gemini/history/{slug}/*.json*')
+                ]
+                for pat in chat_patterns:
+                    for cfile in glob.glob(pat):
+                        if not os.path.isfile(cfile):
+                            continue
+                        fname = os.path.basename(cfile)
+                        cid = os.path.splitext(fname)[0]
+                        if cid in seen_ids:
+                            continue
+                        try:
+                            mtime = int(os.path.getmtime(cfile))
+                            turns = 0
+                            prompt = ''
+                            last_ts = ''
+                            with open(cfile, 'r', encoding='utf-8', errors='ignore') as cf:
+                                for line in cf:
+                                    line = line.strip()
+                                    if not line: continue
+                                    d = json.loads(line)
+                                    msgs = d.get('$set', {}).get('messages', []) or d.get('messages', [])
+                                    if msgs:
+                                        turns = max(turns, len(msgs))
+                                        for m in msgs:
+                                            if not last_ts and m.get('timestamp'):
+                                                last_ts = m.get('timestamp')
+                                            if not prompt:
+                                                c = m.get('content') or m.get('text') or ''
+                                                if isinstance(c, list):
+                                                    for part in c:
+                                                        if isinstance(part, dict) and 'text' in part:
+                                                            t = clean_text(part['text'])
+                                                            if t: prompt = t; break
+                                                elif isinstance(c, str):
+                                                    t = clean_text(c)
+                                                    if t: prompt = t
+
+                            seen_ids.add(cid)
+                            out = {
+                                'id': cid,
+                                'agent': 'Antigravity',
+                                'timestamp': last_ts or str(mtime),
+                                'workspace': ws_norm,
+                                'turns': max(1, turns),
+                                'prompt': (prompt or '(Gemini session)')[:150]
+                            }
+                            print(json.dumps(out))
+                        except Exception:
+                            continue
+    except Exception:
+        pass
 " "$target_ws" "$match_all" 2>/dev/null
     fi
 }
@@ -200,6 +273,7 @@ for bdir in brain_dirs:
 show_antigravity_session() {
     local session_id="$1"
     local conv_dir=""
+    local found_file=""
     local brain_dirs=(
         "$ANTIGRAVITY_BRAIN_DIR"
         "$HOME/.gemini/antigravity/brain"
@@ -223,25 +297,27 @@ show_antigravity_session() {
         fi
     done
 
-    if [[ -z "$conv_dir" || ! -d "$conv_dir" ]]; then
+    if [[ -n "$conv_dir" && -d "$conv_dir" ]]; then
+        found_file="$conv_dir/.system_generated/logs/transcript.jsonl"
+        if [[ ! -f "$found_file" ]]; then
+            found_file="$conv_dir/.system_generated/logs/transcript_full.jsonl"
+        fi
+        if [[ ! -f "$found_file" ]]; then
+            found_file="$(find "$conv_dir" -name "*.json*" 2>/dev/null | head -n 1)"
+        fi
+    fi
+
+    if [[ -z "$found_file" || ! -f "$found_file" ]]; then
+        found_file="$(find "$HOME/.gemini" -name "*${session_id}*.json*" 2>/dev/null | head -n 1)"
+    fi
+
+    if [[ -z "$found_file" || ! -f "$found_file" ]]; then
         return 1
     fi
 
-    local transcript_file="$conv_dir/.system_generated/logs/transcript.jsonl"
-    if [[ ! -f "$transcript_file" ]]; then
-        transcript_file="$conv_dir/.system_generated/logs/transcript_full.jsonl"
-    fi
-    if [[ ! -f "$transcript_file" ]]; then
-        transcript_file="$(find "$conv_dir" -name "*.json*" 2>/dev/null | head -n 1)"
-    fi
-
-    if [[ -z "$transcript_file" || ! -f "$transcript_file" ]]; then
-        return 1
-    fi
-
-    local actual_id="$(basename "$conv_dir")"
+    local actual_id="$(basename "${found_file%.*}")"
     echo -e "${COLOR_BOLD}${COLOR_CYAN}=== Antigravity Session: ${actual_id} ===${COLOR_RESET}"
-    echo -e "${COLOR_DIM}Log: ${transcript_file}${COLOR_RESET}\n"
+    echo -e "${COLOR_DIM}Log: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
         python3 -c "
@@ -252,12 +328,14 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<session_context>.*?</session_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     return str(val)
 
@@ -274,8 +352,24 @@ with open(tfile, 'r', encoding='utf-8', errors='ignore') as f:
             source = data.get('source') or ''
             ts = data.get('created_at') or data.get('timestamp') or ''
             raw_content = data.get('content') or data.get('message') or ''
-            content = clean_text(raw_content)
             
+            msgs = data.get('\$set', {}).get('messages', []) or data.get('messages', [])
+            if msgs:
+                for m in msgs:
+                    m_role = m.get('type') or m.get('role') or 'event'
+                    m_ts = m.get('timestamp') or ''
+                    m_content = clean_text(m.get('content') or m.get('text') or '')
+                    if m_role in ('user', 'human') and m_content:
+                        print(f'\033[1;38;5;46m[Step {step} - User]\033[0m \033[2m{m_ts}\033[0m')
+                        print(f'{m_content}\n')
+                        step += 1
+                    elif m_role in ('assistant', 'model') and m_content:
+                        print(f'\033[1;38;5;51m[Step {step} - Gemini]\033[0m \033[2m{m_ts}\033[0m')
+                        print(f'{m_content}\n')
+                        step += 1
+                continue
+
+            content = clean_text(raw_content)
             if (stype in ('USER_INPUT', 'user') or source == 'USER_EXPLICIT') and content:
                 print(f'\033[1;38;5;46m[Step {step} - User]\033[0m \033[2m{ts}\033[0m')
                 print(f'{content}\n')
@@ -293,9 +387,9 @@ with open(tfile, 'r', encoding='utf-8', errors='ignore') as f:
                 step += 1
         except Exception:
             continue
-" "$transcript_file"
+" "$found_file"
     else
-        cat "$transcript_file"
+        cat "$found_file"
     fi
     return 0
 }

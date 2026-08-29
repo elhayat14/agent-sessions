@@ -34,7 +34,7 @@ search_dirs = [d for d in preferred_dirs if os.path.isdir(d)]
 if not search_dirs and os.path.isdir(fallback_dir):
     search_dirs = [fallback_dir]
 
-IGNORED_KEYWORDS = {'cache', 'index', 'models', 'telemetry', 'config', 'settings', 'auth', 'package', 'node_modules', 'tmp', 'log'}
+IGNORED_KEYWORDS = {'cache', 'models', 'telemetry', 'config', 'settings', 'auth', 'package', 'node_modules', 'tmp', 'log'}
 
 seen_ids = set()
 
@@ -43,13 +43,18 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<skills_instructions>.*?</skills_instructions>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<recommended_plugins>.*?</recommended_plugins>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<environment_context>.*?</environment_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
+        s = re.sub(r'# Context from my IDE setup:.*', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
         s = re.sub(r'<\/?command-message>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
@@ -86,6 +91,9 @@ def extract_cwd(obj):
     for k in ('cwd', 'workspace', 'project_path', 'directory', 'path', 'root'):
         if k in obj and obj[k] and isinstance(obj[k], str) and obj[k].startswith('/'):
             return obj[k]
+    if 'workspace_roots' in obj and isinstance(obj['workspace_roots'], list) and obj['workspace_roots']:
+        if isinstance(obj['workspace_roots'][0], str) and obj['workspace_roots'][0].startswith('/'):
+            return obj['workspace_roots'][0]
     for wrapper_key in ('payload', 'data', 'event', 'meta', 'params', 'args'):
         nested = obj.get(wrapper_key)
         if isinstance(nested, dict):
@@ -101,41 +109,6 @@ def is_ws_match(session_ws):
         return False
     s_norm = os.path.normpath(session_ws).rstrip('/')
     return (s_norm == target_ws) or s_norm.startswith(target_ws + '/')
-
-# Check index files first if present (e.g. session_index.jsonl)
-index_files = [
-    os.path.expanduser('~/.codex/session_index.jsonl'),
-    os.path.expanduser('~/.codex/sessions/index.jsonl')
-]
-for idx_file in index_files:
-    if os.path.isfile(idx_file):
-        try:
-            with open(idx_file, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        sid = data.get('id') or data.get('session_id')
-                        if not sid or sid in seen_ids:
-                            continue
-                        sws = extract_cwd(data)
-                        if is_ws_match(sws):
-                            seen_ids.add(sid)
-                            out = {
-                                'id': sid,
-                                'agent': 'Codex',
-                                'timestamp': str(data.get('updated_at') or data.get('created_at') or data.get('timestamp') or ''),
-                                'workspace': sws,
-                                'turns': int(data.get('turns') or data.get('message_count') or 1),
-                                'prompt': (extract_prompt_from_dict(data) or '(Codex session)')[:150]
-                            }
-                            print(json.dumps(out))
-                    except Exception:
-                        continue
-        except Exception:
-            pass
 
 for base_dir in search_dirs:
     for sfile in glob.glob(os.path.join(base_dir, '**', '*.json*'), recursive=True):
@@ -209,18 +182,36 @@ for base_dir in search_dirs:
                                 updated_at = str(ts)
                             
                             sid = data.get('session_id') or data.get('id')
-                            if isinstance(data.get('payload'), dict):
-                                sid = sid or data['payload'].get('id') or data['payload'].get('session_id')
+                            p = data.get('payload')
+                            if isinstance(p, dict):
+                                sid = sid or p.get('id') or p.get('session_id')
+                                if not sws:
+                                    sws = p.get('cwd') or (p.get('workspace_roots', [None])[0] if isinstance(p.get('workspace_roots'), list) else '')
                             if sid:
                                 clean_id = str(sid)
 
                             if not sws:
                                 sws = extract_cwd(data)
 
+                            if not sws and '<cwd>' in line:
+                                m = re.search(r'<cwd>([^<]+)<\/cwd>', line)
+                                if m:
+                                    sws = m.group(1).strip()
+
                             if not first_prompt:
-                                txt = extract_prompt_from_dict(data)
-                                if txt:
-                                    first_prompt = txt
+                                if isinstance(p, dict) and p.get('role') == 'user':
+                                    c_list = p.get('content') or []
+                                    if isinstance(c_list, list):
+                                        for item in c_list:
+                                            if isinstance(item, dict) and item.get('type') == 'input_text':
+                                                txt = clean_text(item.get('text', ''))
+                                                if txt and not txt.startswith('# Context'):
+                                                    first_prompt = txt
+                                                    break
+                                if not first_prompt:
+                                    txt = extract_prompt_from_dict(data)
+                                    if txt and not txt.startswith('# Context'):
+                                        first_prompt = txt
                         except Exception:
                             continue
 
@@ -259,8 +250,7 @@ show_codex_session() {
         return 1
     fi
 
-    local actual_id
-    actual_id="$(basename "${found_file%.*}")"
+    local actual_id="$(basename "${found_file%.*}")"
     echo -e "${COLOR_BOLD}${COLOR_BLUE}=== Codex Session: ${actual_id} ===${COLOR_RESET}"
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
@@ -273,13 +263,18 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<skills_instructions>.*?</skills_instructions>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<recommended_plugins>.*?</recommended_plugins>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<environment_context>.*?</environment_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
+        s = re.sub(r'# Context from my IDE setup:.*', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
+        s = re.sub(r'<[^>]+>', '', s)
         return re.sub(r'\s+', ' ', s).strip()
     if isinstance(val, list):
         return ' '.join(clean_text(v) for v in val if v).strip()
@@ -315,19 +310,28 @@ with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 data = json.loads(line)
                 role = data.get('role') or data.get('type') or 'event'
                 if isinstance(data.get('payload'), dict):
-                    role = data['payload'].get('type') or data['payload'].get('role') or role
-                    txt = clean_text(data['payload'].get('message') or data['payload'].get('content') or '')
+                    p = data['payload']
+                    role = p.get('type') or p.get('role') or role
+                    if p.get('role') == 'user':
+                        for item in (p.get('content') or []):
+                            txt = clean_text(item.get('text', ''))
+                            if txt and not txt.startswith('# Context'):
+                                print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
+                                print(f'{txt}\n')
+                                step += 1
+                                break
+                    elif role in ('assistant', 'model', 'agent', 'PLANNER_RESPONSE', 'agent_message'):
+                        txt = clean_text(p.get('message') or p.get('content') or '')
+                        if txt:
+                            print(f'\033[1;38;5;39m[Turn {step} - Codex]\033[0m')
+                            print(f'{txt}\n')
+                            step += 1
                 else:
                     txt = clean_text(data.get('content') or data.get('message') or data.get('text') or '')
-                
-                if role in ('user', 'human', 'USER_INPUT', 'user_message') and txt:
-                    print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
-                    print(f'{txt}\n')
-                    step += 1
-                elif role in ('assistant', 'model', 'agent', 'PLANNER_RESPONSE', 'agent_message') and txt:
-                    print(f'\033[1;38;5;39m[Turn {step} - Codex]\033[0m')
-                    print(f'{txt}\n')
-                    step += 1
+                    if role in ('user', 'human', 'USER_INPUT', 'user_message') and txt:
+                        print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
+                        print(f'{txt}\n')
+                        step += 1
             except Exception:
                 continue
 " "$found_file"
