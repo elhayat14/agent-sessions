@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 # Resolve script directory to load libraries
 SOURCE="${BASH_SOURCE[0]}"
@@ -150,6 +150,7 @@ LIMIT=20
 OUTPUT_JSON=false
 ACTION="list"
 TARGET_SESSION_ID=""
+HAS_EXPLICIT_FILTER=false
 
 # Parse command line flags
 while [[ $# -gt 0 ]]; do
@@ -164,6 +165,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--page)
             PAGE="${2:-1}"
+            HAS_EXPLICIT_FILTER=true
             shift 2
             ;;
         -n|--limit)
@@ -172,14 +174,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a|--all)
             MATCH_ALL=true
+            HAS_EXPLICIT_FILTER=true
             shift
             ;;
         --agent)
             AGENT_FILTER="${2:-all}"
+            HAS_EXPLICIT_FILTER=true
             shift 2
             ;;
         -s|--search)
             SEARCH_QUERY="${2:-}"
+            HAS_EXPLICIT_FILTER=true
             shift 2
             ;;
         --json)
@@ -217,6 +222,7 @@ while [[ $# -gt 0 ]]; do
         *)
             if [[ -z "$TARGET_WORKSPACE" ]]; then
                 TARGET_WORKSPACE="$1"
+                HAS_EXPLICIT_FILTER=true
             fi
             shift
             ;;
@@ -268,6 +274,8 @@ export TARGET_WS_ENV="$NORMALIZED_WORKSPACE"
 export MATCH_ALL_ENV="$MATCH_ALL"
 export ACTION_ENV="$ACTION"
 export TARGET_ID_ENV="$TARGET_SESSION_ID"
+export HAS_EXPLICIT_FILTER_ENV="$HAS_EXPLICIT_FILTER"
+export AGENT_FILTER_ENV="$AGENT_FILTER"
 
 # If Python is available, execute structured handler
 if command -v python3 &>/dev/null; then
@@ -283,6 +291,11 @@ target_ws = os.environ.get('TARGET_WS_ENV', '')
 match_all = (os.environ.get('MATCH_ALL_ENV', 'false').lower() == 'true')
 action = os.environ.get('ACTION_ENV', 'list')
 target_id_param = os.environ.get('TARGET_ID_ENV', '').strip()
+has_explicit_filter = (os.environ.get('HAS_EXPLICIT_FILTER_ENV', 'false').lower() == 'true')
+agent_filter = os.environ.get('AGENT_FILTER_ENV', 'all')
+
+cache_dir = os.path.expanduser(os.environ.get('XDG_CACHE_HOME', '~/.cache') + '/agls')
+last_view_path = os.path.join(cache_dir, 'last_view.json')
 
 records = []
 if raw_input:
@@ -320,6 +333,42 @@ def parse_ts(ts_val):
         return 0
 
 records.sort(key=lambda r: parse_ts(r.get('timestamp')), reverse=True)
+
+# State cache functions to persist last rendered view
+def save_last_view(records_list):
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        data = {
+            'target_ws': target_ws,
+            'agent_filter': agent_filter,
+            'timestamp': int(datetime.datetime.now().timestamp()),
+            'rows': {str(idx + 1): rec for idx, rec in enumerate(records_list)}
+        }
+        with open(last_view_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def load_cached_row(num_or_prefix):
+    if not os.path.isfile(last_view_path):
+        return None
+    try:
+        with open(last_view_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        rows = data.get('rows', {})
+        # 1. Exact numeric row lookup
+        if str(num_or_prefix) in rows:
+            return rows[str(num_or_prefix)]
+        # 2. Session ID / prefix lookup in cached view
+        for _, rec in rows.items():
+            if rec.get('id', '') == num_or_prefix:
+                return rec
+        for _, rec in rows.items():
+            if rec.get('id', '').lower().startswith(str(num_or_prefix).lower()):
+                return rec
+    except Exception:
+        pass
+    return None
 
 # ANSI Colors
 RESET = '\033[0m'
@@ -369,6 +418,12 @@ def agent_badge(name):
 def resolve_session(query):
     if not query:
         return None
+    # If the user ran a simple 'agls -r <#>' without explicit filters, check last viewed table first
+    if not has_explicit_filter:
+        cached = load_cached_row(query)
+        if cached:
+            return cached
+
     if query.isdigit():
         idx = int(query) - 1
         if 0 <= idx < len(records):
@@ -379,6 +434,11 @@ def resolve_session(query):
     for r in records:
         if r.get('id', '').lower().startswith(query.lower()):
             return r
+    
+    # Fallback to cache
+    cached = load_cached_row(query)
+    if cached:
+        return cached
     return None
 
 if action in ('show', 'resume'):
@@ -402,6 +462,9 @@ if action in ('show', 'resume'):
 
     print(f'DISPATCH:{action}:{target_rec[\"agent\"]}:{target_rec[\"id\"]}:{target_rec.get(\"workspace\", \"\")}')
     sys.exit(0)
+
+# Save current view to cache so subsequent 'agls -r #' commands match exactly
+save_last_view(records)
 
 # Pagination Calculation
 total_found = len(records)
