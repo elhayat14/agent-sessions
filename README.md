@@ -38,19 +38,34 @@ Quick Resume: agls -r <#|SESSION_ID>  Inspect: agls -i <#|SESSION_ID>
 
 ---
 
-## ⚡ 1-Line Quick Install (No Git Clone Needed)
+## ⚡ 1-Line Quick Install
 
-Install `agls` instantly in your terminal:
+### Default: Install Latest Stable Release (Recommended)
+Installs the latest tested release tag (e.g. `v1.0.0`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/elhayat14/agent-sessions/main/install.sh | bash
 ```
 
 The installer will:
-1. Automatically download the tool into `~/.local/share/agent-sessions`
+1. Clone the repository into `~/.local/share/agent-sessions` and check out the latest stable release tag
 2. Create the `agls` (and alias `agent-sessions`) symlink in `~/.local/bin/`
 3. Configure shell auto-completions for **Zsh** and **Bash**
 4. Verify your `PATH` configuration
+
+---
+
+### Advanced Install Options
+
+#### Install Bleeding Edge (`main` branch)
+```bash
+curl -fsSL https://raw.githubusercontent.com/elhayat14/agent-sessions/main/install.sh | VERSION=main bash
+```
+
+#### Install Specific Release Tag
+```bash
+curl -fsSL https://raw.githubusercontent.com/elhayat14/agent-sessions/main/install.sh | VERSION=v1.0.0 bash
+```
 
 ---
 
@@ -79,9 +94,11 @@ chmod +x bin/agls install.sh uninstall.sh
 ### 3 Convenient Ways to Resume:
 
 #### 1. By Row Number `[#]` (Fastest)
+`agls` remembers your last viewed search / filter / pagination list in its View State Cache:
 ```bash
-agls -r 1        # Resumes session #1
-agls -r 25       # Resumes session #25 (even on page 2)
+agls --agent claude
+agls -r 1        # Resumes session #1 from your Claude list
+agls -r 25       # Resumes session #25 from page 2
 ```
 
 #### 2. By Session ID Prefix
@@ -125,7 +142,7 @@ agls --all -s "docker compose"
 
 ### Inspecting Session Transcripts
 ```bash
-agls -i 1            # Inspect session #1
+agls -i 1            # Inspect session #1 from last view
 agls --show 498f6e24 # Inspect by session ID prefix
 ```
 
@@ -138,9 +155,19 @@ agls --json | jq .
 
 ## 🔄 Self-Update & Uninstallation
 
-### Update `agls` to the Latest Version
+### Update to Latest Stable Release
 ```bash
 agls update
+```
+
+### Update to Bleeding Edge (`main` branch)
+```bash
+agls update --main
+```
+
+### Update / Switch to Specific Version
+```bash
+agls update v1.0.0
 ```
 
 ### Uninstall `agls`
@@ -159,7 +186,7 @@ USAGE:
     agls [COMMAND] [OPTIONS] [WORKSPACE_PATH]
 
 COMMANDS:
-    update                Update agls to latest version from git repository
+    update [TARGET]       Update agls (default: latest tag, or pass '--main' / 'v1.0.0')
     uninstall             Remove agls symlinks and shell completions
 
 ARGUMENTS:

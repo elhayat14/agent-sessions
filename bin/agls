@@ -78,23 +78,47 @@ EOF
 
 # Subcommand: UPDATE
 handle_update() {
+    local target="${1:-latest}"
     echo "${COLOR_BOLD}Checking for updates to agls...${COLOR_RESET}"
     if [[ ! -d "$ROOT_DIR/.git" ]]; then
-        echo "${COLOR_YELLOW}Notice: '$ROOT_DIR' is not a git clone. Re-install via git clone to enable self-updating.${COLOR_RESET}"
+        echo "${COLOR_YELLOW}Notice: '$ROOT_DIR' is not a git clone. Re-install via 1-line script or git clone to enable self-updating.${COLOR_RESET}"
         exit 1
     fi
 
     if command -v git &>/dev/null; then
-        echo "Fetching latest changes from git repository..."
-        if git -C "$ROOT_DIR" pull --ff-only; then
-            echo "Re-applying symlinks and completions..."
-            chmod +x "$ROOT_DIR/bin/agls" "$ROOT_DIR/install.sh" "$ROOT_DIR/uninstall.sh" 2>/dev/null || true
-            "$ROOT_DIR/install.sh" >/dev/null
-            echo "${COLOR_GREEN}✓ agls successfully updated to the latest version!${COLOR_RESET}"
+        echo "Fetching tags and releases from repository..."
+        git -C "$ROOT_DIR" fetch --tags --force --prune 2>/dev/null || true
+        
+        if [[ "$target" == "--main" || "$target" == "--edge" || "$target" == "main" ]]; then
+            echo "Checking out latest 'main' branch..."
+            git -C "$ROOT_DIR" checkout main --quiet
+            git -C "$ROOT_DIR" pull --ff-only --quiet 2>/dev/null || true
+            echo "${COLOR_GREEN}✓ Switched to main branch (edge).${COLOR_RESET}"
+        elif [[ "$target" == "latest" || "$target" == "" ]]; then
+            LATEST_TAG="$(git -C "$ROOT_DIR" tag -l "v*" --sort=-v:refname | head -n 1)"
+            if [[ -n "$LATEST_TAG" ]]; then
+                echo "Switching to latest release tag ($LATEST_TAG)..."
+                git -C "$ROOT_DIR" checkout "$LATEST_TAG" --quiet
+                echo "${COLOR_GREEN}✓ Checked out release tag: $LATEST_TAG${COLOR_RESET}"
+            else
+                git -C "$ROOT_DIR" checkout main --quiet
+                git -C "$ROOT_DIR" pull --ff-only --quiet 2>/dev/null || true
+            fi
         else
-            echo "${COLOR_RED}Update failed. Check your network or git working tree status.${COLOR_RESET}" >&2
-            exit 1
+            SPECIFIC_TAG="$target"
+            [[ "$SPECIFIC_TAG" != v* && "$SPECIFIC_TAG" =~ ^[0-9] ]] && SPECIFIC_TAG="v$SPECIFIC_TAG"
+            if git -C "$ROOT_DIR" checkout "$SPECIFIC_TAG" --quiet 2>/dev/null; then
+                echo "${COLOR_GREEN}✓ Checked out version: $SPECIFIC_TAG${COLOR_RESET}"
+            else
+                echo "${COLOR_RED}Error: Version '$SPECIFIC_TAG' not found.${COLOR_RESET}" >&2
+                exit 1
+            fi
         fi
+
+        echo "Re-applying symlinks and completions..."
+        chmod +x "$ROOT_DIR/bin/agls" "$ROOT_DIR/install.sh" "$ROOT_DIR/uninstall.sh" 2>/dev/null || true
+        "$ROOT_DIR/install.sh" >/dev/null
+        echo "${COLOR_GREEN}✓ agls is up to date!${COLOR_RESET}"
     else
         echo "${COLOR_RED}Error: git command not found.${COLOR_RESET}" >&2
         exit 1
@@ -127,7 +151,8 @@ if [[ $# -gt 0 ]]; then
     case "$1" in
         update)
             shift
-            handle_update
+            TARGET_ARG="${1:-latest}"
+            handle_update "$TARGET_ARG"
             ;;
         uninstall)
             shift
