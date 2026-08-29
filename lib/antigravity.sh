@@ -175,7 +175,7 @@ for bdir in brain_dirs:
             else:
                 for p, _ in candidates:
                     p_norm = os.path.normpath(p).rstrip('/')
-                    if p_norm == target_ws or target_ws.startswith(p_norm + '/'):
+                    if p_norm == target_ws or p_norm.startswith(target_ws + '/'):
                         is_match = True
                         resolved_ws = p_norm
                         break

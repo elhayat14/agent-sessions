@@ -53,7 +53,8 @@ if os.path.isdir(projects_dir):
         if entry.is_dir():
             real_path = slug_to_real_path(entry.name)
             r_norm = os.path.normpath(real_path).rstrip('/')
-            if r_norm == target_ws or target_ws.startswith(r_norm + '/'):
+            # Option B: Match exact project or subdirectories inside target workspace
+            if r_norm == target_ws or r_norm.startswith(target_ws + '/'):
                 print(entry.path)
 " "$target_ws" "$CLAUDE_PROJECTS_DIR"
     fi
@@ -91,7 +92,8 @@ import json, os, sys, re
 sfile = sys.argv[1]
 session_id = sys.argv[2]
 slug = sys.argv[3]
-target_ws = sys.argv[4]
+target_ws = os.path.normpath(sys.argv[4]).rstrip('/')
+match_all = (sys.argv[5].lower() == 'true')
 
 def slug_to_real_path(s):
     parts = [p for p in s.split('-') if p]
@@ -126,6 +128,7 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
@@ -191,6 +194,11 @@ try:
             except Exception:
                 continue
 
+    if not match_all:
+        ws_norm = os.path.normpath(workspace).rstrip('/')
+        if not (ws_norm == target_ws or ws_norm.startswith(target_ws + '/')):
+            sys.exit(0)
+
     if not first_prompt:
         first_prompt = '(Interactive session / command execution)'
 
@@ -205,7 +213,7 @@ try:
     print(json.dumps(out))
 except Exception:
     pass
-" "$sfile" "$session_id" "$slug" "$target_ws" 2>/dev/null
+" "$sfile" "$session_id" "$slug" "$target_ws" "$match_all" 2>/dev/null
             fi
         done
     done <<< "$proj_dirs"
@@ -238,6 +246,7 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
@@ -262,6 +271,8 @@ def clean_text(val):
             return clean_text(val['text'])
         if 'message' in val:
             return clean_text(val['message'])
+        if 'prompt' in val:
+            return clean_text(val['prompt'])
     return str(val)
 
 sfile = sys.argv[1]
