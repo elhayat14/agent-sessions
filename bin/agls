@@ -545,10 +545,12 @@ for offset, r in enumerate(page_records):
     turns = str(r.get('turns', 1))
     
     ws = r.get('workspace', '').strip()
-    if ws.startswith(home_dir):
+    if ws and ws.startswith(home_dir):
         ws_short = '~' + ws[len(home_dir):]
+    elif ws:
+        ws_short = ws
     else:
-        ws_short = ws or '~'
+        ws_short = '(unknown workspace)'
     
     prompt = r.get('prompt', '').replace('\n', ' ').strip()
     if len(prompt) > 80:

@@ -94,7 +94,7 @@ for base_dir in opencode_dirs:
                                 'id': sid,
                                 'agent': 'OpenCode',
                                 'timestamp': sts or str(int(os.path.getmtime(db_path))),
-                                'workspace': sws or target_ws,
+                                'workspace': sws,
                                 'turns': 1,
                                 'prompt': (clean_text(sprompt) or '(OpenCode session)')[:150]
                             }
@@ -152,7 +152,7 @@ for base_dir in opencode_dirs:
                         'id': session_id,
                         'agent': 'OpenCode',
                         'timestamp': str(mtime),
-                        'workspace': sws or target_ws,
+                        'workspace': sws,
                         'turns': turns,
                         'prompt': (first_prompt or '(OpenCode session)')[:150]
                     }

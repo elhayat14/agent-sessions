@@ -130,7 +130,7 @@ for base_dir in pi_dirs:
                     'id': session_id,
                     'agent': 'Pi',
                     'timestamp': updated_at or created_at or str(mtime),
-                    'workspace': sws or target_ws,
+                    'workspace': sws,
                     'turns': max(1, turns),
                     'prompt': (first_prompt or '(Pi session)')[:150]
                 }

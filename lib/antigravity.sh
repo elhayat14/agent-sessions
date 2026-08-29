@@ -163,11 +163,7 @@ for bdir in brain_dirs:
             specific_candidates = [(p, sc) for p, sc in valid_candidates if p not in GENERIC_DIRS]
             candidates = specific_candidates if specific_candidates else valid_candidates
 
-            resolved_ws = target_ws
-            if candidates:
-                # Pick the most frequently used / deepest path
-                candidates.sort(key=lambda item: (item[1], len(item[0])), reverse=True)
-                resolved_ws = candidates[0][0]
+            resolved_ws = candidates[0][0] if candidates else ''
 
             is_match = False
             if match_all:
