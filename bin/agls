@@ -314,7 +314,7 @@ export AGENT_FILTER_ENV="$AGENT_FILTER"
 
 # If Python is available, execute structured handler
 if command -v python3 &>/dev/null; then
-    RESOLVED_ACTION="$(python3 -c "
+    RESOLVED_ACTION="$(python3 - << 'PY_EOF'
 import json, os, sys, datetime
 
 raw_input = os.environ.get('RAW_DATA_JSON', '').strip()
@@ -602,7 +602,8 @@ else:
     print(f'{DIM}Showing {total_found} of {total_found} sessions.{RESET}')
 
 print(f'{DIM}Quick Resume: {BOLD}agls -r <#|SESSION_ID>{RESET}  {DIM}Inspect: {BOLD}agls -i <#|SESSION_ID>{RESET}\n')
-")"
+PY_EOF
+)"
 
     if [[ "$RESOLVED_ACTION" == DISPATCH:* ]]; then
         IFS=':' read -r _ ACT AGENT_NAME SID SWS <<< "$RESOLVED_ACTION"
