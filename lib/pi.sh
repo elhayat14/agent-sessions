@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# agls - Pi Agent Session Parser
+# agls - Pi / OMP / Prime Agent Session Parser
 # ==============================================================================
 
 PI_DIRS=(
     "$HOME/.pi/agent/sessions"
     "$HOME/.pi/sessions"
+    "$HOME/.omp/agent/sessions"
+    "$HOME/.prime/agent/sessions"
     "$HOME/.config/pi/agent/sessions"
 )
 
-# Parse all Pi sessions for target workspace
+# Parse all Pi/OMP/Prime sessions for target workspace
 # Outputs JSON records: {"id": "...", "agent": "Pi", "timestamp": "...", "workspace": "...", "turns": N, "prompt": "..."}
 list_pi_sessions() {
     local target_ws="$1"
@@ -25,6 +27,8 @@ match_all = (sys.argv[2].lower() == 'true')
 pi_dirs = [
     os.path.expanduser('~/.pi/agent/sessions'),
     os.path.expanduser('~/.pi/sessions'),
+    os.path.expanduser('~/.omp/agent/sessions'),
+    os.path.expanduser('~/.prime/agent/sessions'),
     os.path.expanduser('~/.config/pi/agent/sessions')
 ]
 
@@ -35,6 +39,7 @@ def clean_text(val):
         return ''
     if isinstance(val, str):
         s = val.strip()
+        s = re.sub(r'<system-reminder>.*?</system-reminder>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
@@ -54,7 +59,9 @@ def is_ws_match(sws):
     if not sws or not target_ws:
         return False
     s_norm = os.path.normpath(sws).rstrip('/')
-    return (s_norm == target_ws) or target_ws.startswith(s_norm + '/')
+    return (s_norm == target_ws) or s_norm.startswith(target_ws + '/')
+
+seen_ids = set()
 
 for base_dir in pi_dirs:
     if not os.path.isdir(base_dir):
@@ -66,7 +73,13 @@ for base_dir in pi_dirs:
         try:
             filename = os.path.basename(sfile)
             session_id = os.path.splitext(filename)[0]
-            if session_id.lower() in IGNORED_NAMES or 'node_modules' in sfile:
+
+            if session_id.lower() in IGNORED_NAMES or session_id in seen_ids:
+                continue
+
+            # Skip artifact directories
+            parent_name = os.path.basename(os.path.dirname(sfile))
+            if re.match(r'^\d+_[0-9a-f-]{8,}$', parent_name, re.I):
                 continue
 
             mtime = int(os.path.getmtime(sfile))
@@ -104,7 +117,8 @@ for base_dir in pi_dirs:
                         is_single = False
 
             if not is_single:
-                    for line in content.split('\n'):
+                with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
                         line = line.strip()
                         if not line:
                             continue
@@ -128,13 +142,20 @@ for base_dir in pi_dirs:
                             continue
 
             if is_ws_match(sws):
+                seen_ids.add(session_id)
+                agent_name = 'Pi'
+                if '.omp' in sfile:
+                    agent_name = 'OMP'
+                elif '.prime' in sfile:
+                    agent_name = 'Prime'
+
                 out = {
                     'id': session_id,
-                    'agent': 'Pi',
+                    'agent': agent_name,
                     'timestamp': updated_at or created_at or str(mtime),
                     'workspace': sws,
                     'turns': max(1, turns),
-                    'prompt': (first_prompt or '(Pi session)')[:150]
+                    'prompt': (first_prompt or f'({agent_name} session)')[:150]
                 }
                 print(json.dumps(out))
         except Exception:
@@ -159,64 +180,60 @@ show_pi_session() {
         return 1
     fi
 
-    local actual_id
-    actual_id="$(basename "${found_file%.*}")"
+    local actual_id="$(basename "${found_file%.*}")"
     echo -e "${COLOR_BOLD}${COLOR_PURPLE}=== Pi Session: ${actual_id} ===${COLOR_RESET}"
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
         python3 -c "
-import json, sys, re
+import json, sys
 
 def clean_text(val):
     if not val:
         return ''
     if isinstance(val, str):
-        s = val.strip()
-        s = re.sub(r'<\/?command-message>', '', s)
-        s = re.sub(r'<\/?USER_REQUEST>', '', s)
-        return s.strip()
-    if isinstance(val, list):
-        return ' '.join(clean_text(v) for v in val if v).strip()
+        return val.strip()
     if isinstance(val, dict):
         return clean_text(val.get('content') or val.get('text') or val.get('message') or '')
     return str(val)
 
 sfile = sys.argv[1]
-with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
-    content = f.read().strip()
-    if content.startswith('{') and content.endswith('}'):
-        try:
-            data = json.loads(content)
-            msgs = data.get('messages') or data.get('turns') or []
-            for step, m in enumerate(msgs, 1):
-                role = m.get('role') or 'event'
-                txt = clean_text(m.get('content') or m.get('text') or '')
-                if role in ('user', 'human') and txt:
-                    print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
-                    print(f'{txt}\n')
-                elif role in ('assistant', 'model', 'agent') and txt:
-                    print(f'\033[1;38;5;141m[Turn {step} - Pi]\033[0m')
-                    print(f'{txt}\n')
-        except Exception:
-            print(content)
-    else:
+is_single = False
+try:
+    with open(sfile, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        is_single = True
+        msgs = data.get('messages') or data.get('turns') or []
+        for step, m in enumerate(msgs, 1):
+            role = m.get('role') or 'event'
+            content = clean_text(m.get('content') or m.get('text') or '')
+            if role in ('user', 'human') and content:
+                print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
+                print(f'{content}\n')
+            elif role in ('assistant', 'model') and content:
+                print(f'\033[1;38;5;141m[Turn {step} - Pi]\033[0m')
+                print(f'{content}\n')
+except Exception:
+    is_single = False
+
+if not is_single:
+    with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
         step = 1
-        for line in content.split('\n'):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
                 data = json.loads(line)
                 role = data.get('role') or data.get('type') or 'event'
-                txt = clean_text(data.get('content') or data.get('message') or '')
-                if role in ('user', 'human', 'USER_INPUT') and txt:
+                content = clean_text(data.get('content') or data.get('message') or data.get('text') or '')
+                if role in ('user', 'human', 'USER_INPUT') and content:
                     print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
-                    print(f'{txt}\n')
+                    print(f'{content}\n')
                     step += 1
-                elif role in ('assistant', 'model', 'agent', 'PLANNER_RESPONSE') and txt:
+                elif role in ('assistant', 'model', 'agent') and content:
                     print(f'\033[1;38;5;141m[Turn {step} - Pi]\033[0m')
-                    print(f'{txt}\n')
+                    print(f'{content}\n')
                     step += 1
             except Exception:
                 continue

@@ -85,14 +85,17 @@ echo -n "  [8/10] Testing pagination flags... "
 PAGE_OUT="$("$BIN" -p 1 -n 5 "$REPO_DIR" 2>/dev/null || true)"
 echo "✓ PASSED"
 
-# Test 9: Codex and Pi agent filters
-echo -n "  [9/10] Testing Codex and Pi agent filters... "
+# Test 9: Codex, Pi, Cline, Copilot, and Cursor agent filters
+echo -n "  [9/11] Testing agent filter switches (codex, pi, cline, copilot, cursor)... "
 "$BIN" --agent codex "$REPO_DIR" >/dev/null 2>&1 || true
 "$BIN" --agent pi "$REPO_DIR" >/dev/null 2>&1 || true
+"$BIN" --agent cline "$REPO_DIR" >/dev/null 2>&1 || true
+"$BIN" --agent copilot "$REPO_DIR" >/dev/null 2>&1 || true
+"$BIN" --agent cursor "$REPO_DIR" >/dev/null 2>&1 || true
 echo "✓ PASSED"
 
 # Test 10: State cache for row number resuming
-echo -n "  [10/10] Testing state cache preservation... "
+echo -n "  [10/11] Testing state cache preservation... "
 CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/agls/last_view.json"
 "$BIN" --all >/dev/null 2>&1 || true
 if [[ -f "$CACHE_FILE" ]]; then
@@ -102,5 +105,12 @@ else
     exit 1
 fi
 
+# Test 11: Modular parser sourcing
+echo -n "  [11/11] Testing parser source execution... "
+source "$REPO_DIR/lib/cline.sh"
+source "$REPO_DIR/lib/copilot.sh"
+source "$REPO_DIR/lib/cursor.sh"
+echo "✓ PASSED"
+
 echo ""
-echo "🎉 All 10 tests passed successfully!"
+echo "🎉 All 11 tests passed successfully!"

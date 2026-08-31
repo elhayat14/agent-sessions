@@ -252,7 +252,7 @@ show_claude_session() {
     local found_file=""
 
     if [[ -d "$CLAUDE_PROJECTS_DIR" ]]; then
-        found_file="$(find "$CLAUDE_PROJECTS_DIR" -name "${session_id}*.jsonl" -o -name "${session_id}*.json" 2>/dev/null | head -n 1)"
+        found_file="$(find "$CLAUDE_PROJECTS_DIR" -not -path "*/subagents/*" \( -name "${session_id}*.jsonl" -o -name "${session_id}*.json" \) 2>/dev/null | head -n 1)"
     fi
 
     if [[ -z "$found_file" || ! -f "$found_file" ]]; then

@@ -7,7 +7,7 @@
 
 > A fast, lightweight CLI tool to list, filter, inspect, and resume AI agent sessions across workspaces.
 
-Supports **Claude Code**, **Antigravity IDE & CLI (`agy`)**, **OpenCode**, **Codex**, and **Pi Agent**.
+Supports **Claude Code**, **Antigravity IDE & CLI (`agy`)**, **OpenCode**, **Codex**, **Pi Agent / OMP / Prime**, **Cline & Roo Code**, **GitHub Copilot CLI**, and **Cursor**.
 
 ```
 AGENT SESSIONS (Workspace: All Workspaces) Page 1/3
@@ -91,10 +91,13 @@ chmod +x bin/agls install.sh uninstall.sh
 | AI Agent | Resume Command Executed | Default Storage Location |
 | :--- | :--- | :--- |
 | **Claude Code** | `claude --resume <session_id>` | `~/.claude/projects/` |
-| **Antigravity CLI** | `agy --conversation=<session_id>` | `~/.gemini/antigravity/brain/` |
+| **Antigravity CLI** | `agy --conversation=<session_id>` | `~/.gemini/antigravity*/brain/` |
 | **OpenCode** | `opencode -s <session_id>` | `~/.local/share/opencode/` |
 | **Codex** | `codex resume <session_id>` | `~/.codex/sessions/` |
-| **Pi Agent** | `pi --session <session_id>` | `~/.pi/agent/sessions/` |
+| **Pi / OMP / Prime** | `pi --session <session_id>` | `~/.pi/agent/sessions/` |
+| **Cline & Roo Code** | `cline --task <session_id>` | `~/.cline/data/sessions/` |
+| **GitHub Copilot CLI** | `copilot --resume <session_id>` | `~/.copilot/session-state/` |
+| **Cursor** | `cursor <workspace_path>` | `~/.cursor/projects/` |
 
 ### 3 Convenient Ways to Resume:
 

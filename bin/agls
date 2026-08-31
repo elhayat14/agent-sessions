@@ -2,7 +2,8 @@
 # ==============================================================================
 # agls - Agent Sessions CLI
 # List, inspect, search, resume, update, and uninstall AI agent sessions
-# Supports: Claude Code, Antigravity IDE / CLI, OpenCode, Codex, Pi
+# Supports: Claude Code, Antigravity IDE / CLI, OpenCode, Codex, Pi / OMP / Prime,
+#           Cline / Roo Code, GitHub Copilot CLI, Cursor
 # ==============================================================================
 
 set -euo pipefail
@@ -26,6 +27,9 @@ source "$ROOT_DIR/lib/antigravity.sh"
 source "$ROOT_DIR/lib/opencode.sh"
 source "$ROOT_DIR/lib/codex.sh"
 source "$ROOT_DIR/lib/pi.sh"
+source "$ROOT_DIR/lib/cline.sh"
+source "$ROOT_DIR/lib/copilot.sh"
+source "$ROOT_DIR/lib/cursor.sh"
 
 show_help() {
     cat << EOF
@@ -45,7 +49,7 @@ ${COLOR_BOLD}OPTIONS:${COLOR_RESET}
     -p, --page <number>   Page number to display (default: 1)
     -n, --limit <number>  Number of sessions per page (default: 20)
     -a, --all             List sessions across all workspaces
-    --agent <name>        Filter by agent provider: claude | antigravity | opencode | codex | pi | all
+    --agent, -g <name>    Filter by agent provider: claude | antigravity | opencode | codex | pi | cline | copilot | cursor | all
     -s, --search <query>  Filter sessions containing keyword in prompt or summary
     --json                Output results as JSON
     --show, -i [ID|NUM]   Inspect transcript for a session (by ID, prefix, or table row #)
@@ -58,157 +62,146 @@ ${COLOR_BOLD}PAGINATION & RESUMING:${COLOR_RESET}
     agls                          # View page 1
     agls -p 2                     # Go to page 2
     agls -p 3 -n 10               # Page 3 with 10 items per page
-    agls -r 1                     # Resume session #1 directly
-    agls -r 498f6e24              # Resume by partial session ID prefix
-    agls -r                       # Interactive picker to select and resume
+    agls -a                       # View sessions from all workspaces
+    agls -s "migration"           # Search for prompts matching "migration"
+    agls -i 3                     # Inspect transcript of row #3 from last view
+    agls -r 3                     # Resume session #3 from last view
 
-${COLOR_BOLD}EXAMPLES:${COLOR_RESET}
-    agls                          # List sessions for current directory
-    agls ~/projects/my-app        # List sessions for specific workspace
-    agls --all -s "refactor auth" # Search across all workspaces for keyword
-    agls --agent claude           # List only Claude Code sessions
-    agls --agent codex            # List only Codex sessions
-    agls --agent pi               # List only Pi sessions
-    agls --show 1                 # Inspect transcript of session #1
-    agls update                   # Pull latest changes and update agls
-    agls uninstall                # Remove agls from PATH and completions
-
+${COLOR_BOLD}SUPPORTED AGENTS:${COLOR_RESET}
+    • Claude Code (Anthropic)
+    • Antigravity IDE & CLI (Google DeepMind)
+    • Codex (OpenAI)
+    • OpenCode
+    • Pi Agent / OMP / Prime Agent
+    • Cline & Roo Code
+    • GitHub Copilot CLI
+    • Cursor IDE Transcripts
 EOF
 }
 
-# Subcommand: UPDATE
-handle_update() {
-    local target="${1:-latest}"
-    echo "${COLOR_BOLD}Checking for updates to agls...${COLOR_RESET}"
+show_version() {
+    echo "agls version ${VERSION}"
+}
+
+update_agls() {
+    echo -e "${COLOR_BOLD}Checking for updates to agls...${COLOR_RESET}"
+    
     if [[ ! -d "$ROOT_DIR/.git" ]]; then
-        echo "${COLOR_YELLOW}Notice: '$ROOT_DIR' is not a git clone. Re-install via 1-line script or git clone to enable self-updating.${COLOR_RESET}"
+        echo -e "${COLOR_RED}Error: agls was not installed via Git repository.${COLOR_RESET}" >&2
+        echo "To update, please re-run the installation script:" >&2
+        echo "  curl -fsSL https://raw.githubusercontent.com/elhayat14/agent-sessions/main/install.sh | bash" >&2
         exit 1
     fi
 
-    if command -v git &>/dev/null; then
-        echo "Fetching tags and releases from repository..."
-        git -C "$ROOT_DIR" fetch --tags --force --prune 2>/dev/null || true
-        
-        if [[ "$target" == "--main" || "$target" == "--edge" || "$target" == "main" ]]; then
-            echo "Checking out latest 'main' branch..."
-            git -C "$ROOT_DIR" checkout main --quiet
-            git -C "$ROOT_DIR" pull --ff-only --quiet 2>/dev/null || true
-            echo "${COLOR_GREEN}✓ Switched to main branch (edge).${COLOR_RESET}"
-        elif [[ "$target" == "latest" || "$target" == "" ]]; then
-            LATEST_TAG="$(git -C "$ROOT_DIR" tag -l "v*" --sort=-v:refname | head -n 1)"
-            if [[ -n "$LATEST_TAG" ]]; then
-                echo "Switching to latest release tag ($LATEST_TAG)..."
-                git -C "$ROOT_DIR" checkout "$LATEST_TAG" --quiet
-                echo "${COLOR_GREEN}✓ Checked out release tag: $LATEST_TAG${COLOR_RESET}"
-            else
-                git -C "$ROOT_DIR" checkout main --quiet
-                git -C "$ROOT_DIR" pull --ff-only --quiet 2>/dev/null || true
-            fi
-        else
-            SPECIFIC_TAG="$target"
-            [[ "$SPECIFIC_TAG" != v* && "$SPECIFIC_TAG" =~ ^[0-9] ]] && SPECIFIC_TAG="v$SPECIFIC_TAG"
-            if git -C "$ROOT_DIR" checkout "$SPECIFIC_TAG" --quiet 2>/dev/null; then
-                echo "${COLOR_GREEN}✓ Checked out version: $SPECIFIC_TAG${COLOR_RESET}"
-            else
-                echo "${COLOR_RED}Error: Version '$SPECIFIC_TAG' not found.${COLOR_RESET}" >&2
-                exit 1
-            fi
-        fi
+    local current_branch
+    current_branch="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+    
+    echo -e "${COLOR_DIM}Fetching tags and releases from repository...${COLOR_RESET}"
+    git -C "$ROOT_DIR" fetch --tags --force --quiet origin
 
-        echo "Re-applying symlinks and completions..."
-        chmod +x "$ROOT_DIR/bin/agls" "$ROOT_DIR/install.sh" "$ROOT_DIR/uninstall.sh" 2>/dev/null || true
-        "$ROOT_DIR/install.sh" >/dev/null
-        echo "${COLOR_GREEN}✓ agls is up to date!${COLOR_RESET}"
+    local latest_tag
+    latest_tag="$(git -C "$ROOT_DIR" describe --tags "$(git -C "$ROOT_DIR" rev-list --tags --max-count=1 2>/dev/null)" 2>/dev/null || true)"
+
+    if [[ -n "$latest_tag" ]]; then
+        echo -e "${COLOR_DIM}Switching to latest release tag (${latest_tag})...${COLOR_RESET}"
+        git -C "$ROOT_DIR" checkout --quiet "$latest_tag"
+        echo -e "${COLOR_GREEN}✓ Checked out release tag: ${latest_tag}${COLOR_RESET}"
     else
-        echo "${COLOR_RED}Error: git command not found.${COLOR_RESET}" >&2
-        exit 1
+        echo -e "${COLOR_DIM}Pulling latest changes on branch ${current_branch}...${COLOR_RESET}"
+        git -C "$ROOT_DIR" pull --quiet origin "$current_branch"
     fi
+
+    echo -e "${COLOR_DIM}Re-applying symlinks and completions...${COLOR_RESET}"
+    "$ROOT_DIR/install.sh" --update >/dev/null 2>&1 || true
+
+    echo -e "${COLOR_BOLD}${COLOR_GREEN}✓ agls is up to date!${COLOR_RESET}"
     exit 0
 }
 
-# Subcommand: UNINSTALL
-handle_uninstall() {
+uninstall_agls() {
     local auto_yes="${1:-false}"
-    if [[ "$auto_yes" != "true" && -t 0 ]]; then
-        read -r -p "Are you sure you want to uninstall agls? [y/N] " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Uninstallation cancelled."
-            exit 0
-        fi
+
+    echo -e "${COLOR_BOLD}${COLOR_RED}=== agls Uninstaller ===${COLOR_RESET}"
+    echo "This will remove the agls symlink and configuration from your system."
+    echo ""
+
+    if [[ "$auto_yes" != "true" ]]; then
+        read -r -p "Are you sure you want to uninstall agls? [y/N] " response
+        case "$response" in
+            [yY][eE][sS]|[yY])
+                ;;
+            *)
+                echo "Uninstallation cancelled."
+                exit 0
+                ;;
+        esac
     fi
 
-    if [[ -f "$ROOT_DIR/uninstall.sh" ]]; then
-        "$ROOT_DIR/uninstall.sh"
-    else
-        rm -f "$HOME/.local/bin/agls" "$HOME/.local/bin/agent-sessions" "/usr/local/bin/agls" "/usr/local/bin/agent-sessions" 2>/dev/null || true
-        echo "${COLOR_GREEN}✓ agls symlinks removed.${COLOR_RESET}"
-    fi
+    local bin_dirs=("/usr/local/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/.agent-sessions/bin")
+    for bdir in "${bin_dirs[@]}"; do
+        if [[ -L "$bdir/agls" ]]; then
+            rm -f "$bdir/agls"
+            echo -e "${COLOR_DIM}Removed symlink: $bdir/agls${COLOR_RESET}"
+        fi
+    done
+
+    rm -rf "$HOME/.cache/agls" "$HOME/.config/agls" 2>/dev/null || true
+
+    echo ""
+    echo -e "${COLOR_BOLD}${COLOR_GREEN}✓ agls has been successfully uninstalled.${COLOR_RESET}"
     exit 0
 }
 
-# Check if first argument is a subcommand
-if [[ $# -gt 0 ]]; then
-    case "$1" in
-        update)
-            shift
-            TARGET_ARG="${1:-latest}"
-            handle_update "$TARGET_ARG"
-            ;;
-        uninstall)
-            shift
-            AUTO_YES=false
-            if [[ $# -gt 0 && ( "$1" == "-y" || "$1" == "--yes" ) ]]; then
-                AUTO_YES=true
-            fi
-            handle_uninstall "$AUTO_YES"
-            ;;
-    esac
-fi
-
-# Defaults
+# Parse Command Line Arguments
 TARGET_WORKSPACE=""
 MATCH_ALL=false
 AGENT_FILTER="all"
 SEARCH_QUERY=""
-PAGE=1
-LIMIT=20
 OUTPUT_JSON=false
 ACTION="list"
 TARGET_SESSION_ID=""
+AUTO_CONFIRM=false
+PAGE=1
+LIMIT=20
 HAS_EXPLICIT_FILTER=false
 
-# Parse command line flags
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        update)
+            update_agls
+            ;;
+        uninstall)
+            ACTION="uninstall"
+            shift
+            ;;
         -h|--help)
             show_help
             exit 0
             ;;
         -v|--version)
-            echo "agls v${VERSION}"
+            show_version
             exit 0
-            ;;
-        -p|--page)
-            PAGE="${2:-1}"
-            HAS_EXPLICIT_FILTER=true
-            shift 2
-            ;;
-        -n|--limit)
-            LIMIT="${2:-20}"
-            shift 2
             ;;
         -a|--all)
             MATCH_ALL=true
             HAS_EXPLICIT_FILTER=true
             shift
             ;;
-        --agent)
-            AGENT_FILTER="${2:-all}"
+        -p|--page)
+            PAGE="${2:-1}"
+            shift 2
+            ;;
+        -n|--limit)
+            LIMIT="${2:-20}"
+            shift 2
+            ;;
+        --agent|-g)
+            AGENT_FILTER="$(echo "${2:-all}" | tr '[:upper:]' '[:lower:]')"
             HAS_EXPLICIT_FILTER=true
             shift 2
             ;;
         -s|--search)
-            SEARCH_QUERY="${2:-}"
+            SEARCH_QUERY="$2"
             HAS_EXPLICIT_FILTER=true
             shift 2
             ;;
@@ -216,27 +209,26 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_JSON=true
             shift
             ;;
-        --show|-i)
+        -i|--show)
             ACTION="show"
-            if [[ $# -ge 2 && "$2" != -* ]]; then
+            if [[ $# -gt 1 && ! "$2" =~ ^- ]]; then
                 TARGET_SESSION_ID="$2"
                 shift 2
             else
-                TARGET_SESSION_ID=""
                 shift
             fi
             ;;
-        --resume|-r)
+        -r|--resume)
             ACTION="resume"
-            if [[ $# -ge 2 && "$2" != -* ]]; then
+            if [[ $# -gt 1 && ! "$2" =~ ^- ]]; then
                 TARGET_SESSION_ID="$2"
                 shift 2
             else
-                TARGET_SESSION_ID=""
                 shift
             fi
             ;;
         -y|--yes)
+            AUTO_CONFIRM=true
             shift
             ;;
         -*)
@@ -265,7 +257,7 @@ if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "claude" ]]; then
     done < <(list_claude_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
 fi
 
-if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "antigravity" || "$AGENT_FILTER" == "agy" ]]; then
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "antigravity" || "$AGENT_FILTER" == "agy" || "$AGENT_FILTER" == "gemini" ]]; then
     while IFS= read -r line; do
         [[ -n "$line" ]] && RAW_RECORDS+=("$line")
     done < <(list_antigravity_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
@@ -283,10 +275,28 @@ if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "codex" ]]; then
     done < <(list_codex_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
 fi
 
-if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "pi" ]]; then
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "pi" || "$AGENT_FILTER" == "omp" || "$AGENT_FILTER" == "prime" ]]; then
     while IFS= read -r line; do
         [[ -n "$line" ]] && RAW_RECORDS+=("$line")
     done < <(list_pi_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "cline" || "$AGENT_FILTER" == "roo" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_cline_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "copilot" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_copilot_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
+fi
+
+if [[ "$AGENT_FILTER" == "all" || "$AGENT_FILTER" == "cursor" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && RAW_RECORDS+=("$line")
+    done < <(list_cursor_sessions "$NORMALIZED_WORKSPACE" "$MATCH_ALL" 2>/dev/null || true)
 fi
 
 # Export environment variables for Python processing
@@ -319,9 +329,6 @@ target_id_param = os.environ.get('TARGET_ID_ENV', '').strip()
 has_explicit_filter = (os.environ.get('HAS_EXPLICIT_FILTER_ENV', 'false').lower() == 'true')
 agent_filter = os.environ.get('AGENT_FILTER_ENV', 'all')
 
-cache_dir = os.path.expanduser(os.environ.get('XDG_CACHE_HOME', '~/.cache') + '/agls')
-last_view_path = os.path.join(cache_dir, 'last_view.json')
-
 records = []
 if raw_input:
     for line in raw_input.split('\n'):
@@ -329,35 +336,37 @@ if raw_input:
         if not line:
             continue
         try:
-            item = json.loads(line)
+            r = json.loads(line)
             if search_q:
-                text_to_search = (item.get('id', '') + ' ' + item.get('prompt', '') + ' ' + item.get('workspace', '')).lower()
-                if search_q not in text_to_search:
+                combined = (str(r.get('id', '')) + ' ' + str(r.get('prompt', '')) + ' ' + str(r.get('agent', '')) + ' ' + str(r.get('workspace', ''))).lower()
+                if search_q not in combined:
                     continue
-            records.append(item)
+            records.append(r)
         except Exception:
             continue
 
-def parse_ts(ts_val):
-    if not ts_val:
+def parse_ts(val):
+    if not val:
         return 0
-    if isinstance(ts_val, (int, float)):
-        return int(ts_val)
-    if str(ts_val).isdigit():
-        v = int(ts_val)
-        return v // 1000 if len(str(ts_val)) > 11 else v
+    s = str(val).strip()
+    if s.isdigit():
+        n = int(s)
+        if n > 1e11:  # ms
+            return n // 1000
+        return n
     try:
-        s = str(ts_val).replace('Z', '+00:00')
-        if '.' in s and ('+' in s or '-' in s[10:]):
-            parts = s.split('.')
-            tz_part = '+' + parts[1].split('+')[1] if '+' in parts[1] else '-' + parts[1].split('-')[1] if '-' in parts[1] else ''
-            s = parts[0] + tz_part
+        s = s.replace('Z', '+00:00')
         dt = datetime.datetime.fromisoformat(s)
         return int(dt.timestamp())
     except Exception:
         return 0
 
-records.sort(key=lambda r: parse_ts(r.get('timestamp')), reverse=True)
+# Sort by recency descending
+records.sort(key=lambda x: parse_ts(x.get('timestamp')), reverse=True)
+
+# State cache directory
+cache_dir = os.path.expanduser('~/.cache/agls')
+last_view_path = os.path.join(cache_dir, 'last_view.json')
 
 # State cache functions to persist last rendered view
 def save_last_view(records_list):
@@ -436,8 +445,14 @@ def agent_badge(name):
         return f'{GREEN}OpenCode{RESET}'
     elif 'codex' in n:
         return f'{BLUE}Codex{RESET}'
-    elif 'pi' in n:
-        return f'{PURPLE}Pi{RESET}'
+    elif 'pi' in n or 'omp' in n or 'prime' in n:
+        return f'{PURPLE}{name}{RESET}'
+    elif 'cline' in n or 'roo' in n:
+        return f'{CYAN}Cline{RESET}'
+    elif 'copilot' in n:
+        return f'{PURPLE}Copilot{RESET}'
+    elif 'cursor' in n:
+        return f'{BLUE}Cursor{RESET}'
     return f'{YELLOW}{name}{RESET}'
 
 def resolve_session(query):
@@ -474,7 +489,7 @@ if action in ('show', 'resume'):
         verb = 'resume' if action == 'resume' else 'inspect'
         print(f'\n{BOLD}Select a session to {verb}:{RESET}')
         for i, r in enumerate(records[:15], 1):
-            print(f'  {CYAN}[{i}]{RESET} {r.get(\"id\", \"\")} ({r.get(\"agent\", \"\")}, {format_time(r.get(\"timestamp\"))}) - {r.get(\"prompt\", \"\")[:40]}')
+            print(f'  {CYAN}[{i}]{RESET} {r.get("id", "")} ({r.get("agent", "")}, {format_time(r.get("timestamp"))}) - {r.get("prompt", "")[:40]}')
         try:
             choice = input(f'\nEnter number (1-{min(15, len(records))}): ').strip()
             target_rec = resolve_session(choice)
@@ -485,7 +500,7 @@ if action in ('show', 'resume'):
         print(f'{RED}Error: Session \"{target_id_param}\" not found.{RESET}', file=sys.stderr)
         sys.exit(1)
 
-    print(f'DISPATCH:{action}:{target_rec[\"agent\"]}:{target_rec[\"id\"]}:{target_rec.get(\"workspace\", \"\")}')
+    print(f'DISPATCH:{action}:{target_rec["agent"]}:{target_rec["id"]}:{target_rec.get("workspace", "")}')
     sys.exit(0)
 
 # Save current view to cache so subsequent 'agls -r #' commands match exactly
@@ -520,14 +535,14 @@ col_turns_w = 7
 
 header_line = (
     f'{BOLD}{GRAY}'
-    f'{\"#\":<{col_idx_w}} '
-    f'{\"SESSION ID\":<{col_id_w}} '
-    f'{\"AGENT\":<{col_agent_w}} '
-    f'{\"UPDATED\":<{col_age_w}} '
-    f'{\"TURNS\":<{col_turns_w}}'
+    f'{"#":<{col_idx_w}} '
+    f'{"SESSION ID":<{col_id_w}} '
+    f'{"AGENT":<{col_agent_w}} '
+    f'{"UPDATED":<{col_age_w}} '
+    f'{"TURNS":<{col_turns_w}}'
     f'{RESET}'
 )
-separator = f'{DIM}{\"─\" * 80}{RESET}'
+separator = f'{DIM}{"─" * 80}{RESET}'
 
 print(header_line)
 print(separator)
@@ -601,8 +616,14 @@ print(f'{DIM}Quick Resume: {BOLD}agls -r <#|SESSION_ID>{RESET}  {DIM}Inspect: {B
                 show_opencode_session "$SID"
             elif [[ "$AGENT_NAME" == *"Codex"* ]]; then
                 show_codex_session "$SID"
-            elif [[ "$AGENT_NAME" == *"Pi"* ]]; then
+            elif [[ "$AGENT_NAME" == *"Pi"* || "$AGENT_NAME" == *"OMP"* || "$AGENT_NAME" == *"Prime"* ]]; then
                 show_pi_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Cline"* ]]; then
+                show_cline_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Copilot"* ]]; then
+                show_copilot_session "$SID"
+            elif [[ "$AGENT_NAME" == *"Cursor"* ]]; then
+                show_cursor_session "$SID"
             else
                 echo "${COLOR_RED}Unknown agent: $AGENT_NAME${COLOR_RESET}"
             fi
@@ -657,6 +678,30 @@ print(f'{DIM}Quick Resume: {BOLD}agls -r <#|SESSION_ID>{RESET}  {DIM}Inspect: {B
                 echo ""
                 if command -v pi &>/dev/null; then
                     exec pi --session "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Cline"* ]]; then
+                cmd="cline --task $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v cline &>/dev/null; then
+                    exec cline --task "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Copilot"* ]]; then
+                cmd="copilot --resume $SID"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v copilot &>/dev/null; then
+                    exec copilot --resume "$SID"
+                fi
+                exit 0
+            elif [[ "$AGENT_NAME" == *"Cursor"* ]]; then
+                cmd="cursor $SWS"
+                echo "Execute command: ${COLOR_BOLD}${COLOR_GREEN}${cmd}${COLOR_RESET}"
+                echo ""
+                if command -v cursor &>/dev/null; then
+                    exec cursor "$SWS"
                 fi
                 exit 0
             fi

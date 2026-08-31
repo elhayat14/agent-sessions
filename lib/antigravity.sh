@@ -75,6 +75,33 @@ def clean_text(val):
         return clean_text(val.get('content') or val.get('text') or '')
     return str(val)
 
+# Index history.jsonl files for exact workspace joining
+history_index = collections.defaultdict(list)
+history_files = [
+    os.path.expanduser('~/.gemini/antigravity/history.jsonl'),
+    os.path.expanduser('~/.gemini/antigravity-cli/history.jsonl'),
+    os.path.expanduser('~/.gemini/antigravity-ide/history.jsonl'),
+    os.path.expanduser('~/.config/antigravity/history.jsonl')
+]
+for hf in history_files:
+    if os.path.isfile(hf):
+        try:
+            with open(hf, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    try:
+                        rec = json.loads(line)
+                        disp = clean_text(rec.get('display') or rec.get('title') or '')
+                        ws = rec.get('workspace', '').strip()
+                        ts = rec.get('timestamp') or ''
+                        if disp and ws and os.path.isdir(ws):
+                            history_index[disp].append({'workspace': os.path.normpath(ws), 'timestamp': str(ts)})
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
 # 1. Check brain / session directories
 for bdir in brain_dirs:
     if not os.path.isdir(bdir):
@@ -159,6 +186,10 @@ for bdir in brain_dirs:
                                 first_prompt = txt
                     except Exception:
                         continue
+
+            if first_prompt and first_prompt in history_index:
+                for entry in history_index[first_prompt]:
+                    ws_scores[entry['workspace']] += 100
 
             # Filter out non-existent directories or internal temp paths
             valid_candidates = []

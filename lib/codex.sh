@@ -34,6 +34,30 @@ search_dirs = [d for d in preferred_dirs if os.path.isdir(d)]
 if not search_dirs and os.path.isdir(fallback_dir):
     search_dirs = [fallback_dir]
 
+# 1. Index session_index.jsonl for thread titles
+codex_titles = {}
+index_files = [
+    os.path.expanduser('~/.codex/session_index.jsonl'),
+    os.path.expanduser('~/.config/codex/session_index.jsonl')
+]
+for ifile in index_files:
+    if os.path.isfile(ifile):
+        try:
+            with open(ifile, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    try:
+                        rec = json.loads(line)
+                        sid = str(rec.get('id') or '')
+                        tname = rec.get('thread_name') or rec.get('title') or ''
+                        if sid and tname:
+                            codex_titles[sid] = str(tname).strip()
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
 IGNORED_KEYWORDS = {'cache', 'models', 'telemetry', 'config', 'settings', 'auth', 'package', 'node_modules', 'tmp', 'log'}
 
 seen_ids = set()
@@ -46,11 +70,15 @@ def clean_text(val):
         s = re.sub(r'<skills_instructions>.*?</skills_instructions>', '', s, flags=re.DOTALL)
         s = re.sub(r'<recommended_plugins>.*?</recommended_plugins>', '', s, flags=re.DOTALL)
         s = re.sub(r'<environment_context>.*?</environment_context>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<system-reminder>.*?</system-reminder>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<codex_internal_context>.*?</codex_internal_context>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<goal_context>.*?</goal_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
+        s = re.sub(r'# AGENTS\.md instructions.*', '', s, flags=re.DOTALL)
         s = re.sub(r'# Context from my IDE setup:.*', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
         s = re.sub(r'<\/?command-message>', '', s)
@@ -110,6 +138,17 @@ def is_ws_match(session_ws):
     s_norm = os.path.normpath(session_ws).rstrip('/')
     return (s_norm == target_ws) or s_norm.startswith(target_ws + '/')
 
+def is_worker_session(payload):
+    if not isinstance(payload, dict):
+        return False
+    ts = payload.get('thread_source') or payload.get('threadSource')
+    if ts and str(ts).lower() != 'user':
+        return True
+    src = payload.get('source')
+    if isinstance(src, dict) and src.get('subagent'):
+        return True
+    return False
+
 for base_dir in search_dirs:
     for sfile in glob.glob(os.path.join(base_dir, '**', '*.json*'), recursive=True):
         if not os.path.isfile(sfile) or os.path.basename(sfile).startswith('.'):
@@ -134,11 +173,13 @@ for base_dir in search_dirs:
             mtime = int(os.path.getmtime(sfile))
             turns = 0
             first_prompt = ''
+            meta_title = ''
             sws = ''
             created_at = ''
             updated_at = ''
+            is_worker = False
 
-            # First, try parsing as single JSON if single line
+            # First, try parsing as single JSON
             is_single = False
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 first_char = f.read(1)
@@ -185,14 +226,21 @@ for base_dir in search_dirs:
                             if ts:
                                 updated_at = str(ts)
                             
-                            sid = data.get('session_id') or data.get('id')
                             p = data.get('payload')
-                            if isinstance(p, dict):
-                                sid = sid or p.get('id') or p.get('session_id')
+                            if data.get('type') == 'session_meta' and isinstance(p, dict):
+                                if is_worker_session(p):
+                                    is_worker = True
+                                    break
+                                meta_title = p.get('title') or p.get('thread_name') or p.get('threadName') or ''
+                                sid = p.get('id') or p.get('session_id')
+                                if sid:
+                                    clean_id = str(sid)
                                 if not sws:
                                     sws = p.get('cwd') or (p.get('workspace_roots', [None])[0] if isinstance(p.get('workspace_roots'), list) else '')
-                            if sid:
-                                clean_id = str(sid)
+
+                            if isinstance(p, dict):
+                                if not sws:
+                                    sws = p.get('cwd') or (p.get('workspace_roots', [None])[0] if isinstance(p.get('workspace_roots'), list) else '')
 
                             if not sws:
                                 sws = extract_cwd(data)
@@ -209,15 +257,20 @@ for base_dir in search_dirs:
                                         for item in c_list:
                                             if isinstance(item, dict) and item.get('type') == 'input_text':
                                                 txt = clean_text(item.get('text', ''))
-                                                if txt and not txt.startswith('# Context'):
+                                                if txt and not txt.startswith('# Context') and not txt.startswith('# AGENTS'):
                                                     first_prompt = txt
                                                     break
                                 if not first_prompt:
                                     txt = extract_prompt_from_dict(data)
-                                    if txt and not txt.startswith('# Context'):
+                                    if txt and not txt.startswith('# Context') and not txt.startswith('# AGENTS'):
                                         first_prompt = txt
                         except Exception:
                             continue
+
+            if is_worker:
+                continue
+
+            final_title = codex_titles.get(clean_id) or meta_title or first_prompt or '(Codex session)'
 
             if is_ws_match(sws):
                 seen_ids.add(clean_id)
@@ -229,7 +282,7 @@ for base_dir in search_dirs:
                     'timestamp': updated_at or created_at or str(mtime),
                     'workspace': sws,
                     'turns': max(1, turns),
-                    'prompt': (first_prompt or '(Codex session)')[:150]
+                    'prompt': final_title[:150]
                 }
                 print(json.dumps(out))
         except Exception:
@@ -270,11 +323,15 @@ def clean_text(val):
         s = re.sub(r'<skills_instructions>.*?</skills_instructions>', '', s, flags=re.DOTALL)
         s = re.sub(r'<recommended_plugins>.*?</recommended_plugins>', '', s, flags=re.DOTALL)
         s = re.sub(r'<environment_context>.*?</environment_context>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<system-reminder>.*?</system-reminder>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<codex_internal_context>.*?</codex_internal_context>', '', s, flags=re.DOTALL)
+        s = re.sub(r'<goal_context>.*?</goal_context>', '', s, flags=re.DOTALL)
         s = re.sub(r'<local-command-caveat>.*?</local-command-caveat>', '', s, flags=re.DOTALL)
         s = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', s, flags=re.DOTALL)
         s = re.sub(r'<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-message>.*?</command-message>', '', s, flags=re.DOTALL)
         s = re.sub(r'<command-name>.*?</command-name>', '', s, flags=re.DOTALL)
+        s = re.sub(r'# AGENTS\.md instructions.*', '', s, flags=re.DOTALL)
         s = re.sub(r'# Context from my IDE setup:.*', '', s, flags=re.DOTALL)
         s = re.sub(r'<\/?command-message>', '', s)
         s = re.sub(r'<\/?USER_REQUEST>', '', s)
@@ -321,7 +378,7 @@ if not is_single:
                     if p.get('role') == 'user':
                         for item in (p.get('content') or []):
                             txt = clean_text(item.get('text', ''))
-                            if txt and not txt.startswith('# Context'):
+                            if txt and not txt.startswith('# Context') and not txt.startswith('# AGENTS'):
                                 print(f'\033[1;38;5;46m[Turn {step} - User]\033[0m')
                                 print(f'{txt}\n')
                                 step += 1
