@@ -17,7 +17,7 @@ list_opencode_sessions() {
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, sqlite3, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -59,94 +59,92 @@ for base_dir in opencode_dirs:
     if not os.path.isdir(base_dir):
         continue
 
-    # 1. Search for SQLite database if present (opencode.db)
-    for db_path in glob.glob(os.path.join(base_dir, '**', '*.db'), recursive=True):
-        try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table';\")
-            tables = [r[0] for r in cursor.fetchall()]
-            for tbl in tables:
-                if 'session' in tbl.lower() or 'conversation' in tbl.lower():
-                    cursor.execute(f'PRAGMA table_info({tbl});')
-                    cols = [c[1] for c in cursor.fetchall()]
-                    ws_col = next((c for c in cols if c.lower() in ('directory', 'cwd', 'workspace', 'path', 'project_path')), None)
-                    id_col = next((c for c in cols if 'id' in c.lower()), cols[0])
-                    prompt_col = next((c for c in cols if c.lower() in ('title', 'prompt', 'summary', 'name', 'initial_prompt')), None)
-                    created_col = next((c for c in cols if 'created' in c.lower() or 'time' in c.lower()), None)
-                    updated_col = next((c for c in cols if 'updated' in c.lower()), None)
-
-                    select_cols = [id_col]
-                    select_cols.append(ws_col if ws_col else '\"\"')
-                    select_cols.append(prompt_col if prompt_col else '\"\"')
-                    select_cols.append(created_col if created_col else '\"\"')
-                    select_cols.append(updated_col if updated_col else '\"\"')
-
-                    query = f\"SELECT {','.join(select_cols)} FROM {tbl} ORDER BY rowid DESC LIMIT 500;\"
-                    cursor.execute(query)
-                    for row in cursor.fetchall():
-                        sid = str(row[0])
-                        sws = str(row[1]) if len(row) > 1 and row[1] is not None else ''
-                        sprompt = str(row[2]) if len(row) > 2 and row[2] is not None else ''
-                        created_ts = str(row[3]) if len(row) > 3 and row[3] is not None else ''
-                        updated_ts = str(row[4]) if len(row) > 4 and row[4] is not None else ''
-
-                        if sid.lower() in IGNORED_NAMES or sid in seen_ids:
+    # 1. Query SQLite databases (opencode.db)
+    db_candidates = [
+        os.path.join(base_dir, 'opencode.db'),
+        os.path.join(base_dir, 'storage.db'),
+        os.path.join(base_dir, 'database.db')
+    ]
+    for db_path in db_candidates:
+        if os.path.isfile(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                cur = conn.cursor()
+                # Check tables
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session', 'sessions');")
+                if cur.fetchone():
+                    table_name = 'session'
+                    # Select session id, title, directory, time_created, time_updated
+                    cur.execute(f"SELECT id, title, directory, time_created, time_updated FROM {table_name}")
+                    for row in cur.fetchall():
+                        sid, stitle, sdir, t_create, t_update = row[0], row[1], row[2], row[3], row[4]
+                        if not sid or sid in seen_ids:
                             continue
-
-                        # Count messages in message table if available
-                        message_count = 1
-                        if 'message' in tables:
+                        
+                        sws = sdir or ''
+                        if is_ws_match(sws):
+                            # Count messages if message table exists
+                            turns = 1
                             try:
-                                cursor.execute(\"SELECT COUNT(*) FROM message WHERE session_id = ?\", (sid,))
-                                cnt_row = cursor.fetchone()
-                                if cnt_row and cnt_row[0] > 0:
-                                    message_count = cnt_row[0]
+                                cur.execute("SELECT COUNT(*) FROM message WHERE session_id = ?", (sid,))
+                                cnt_row = cur.fetchone()
+                                if cnt_row and cnt_row[0]:
+                                    turns = cnt_row[0]
                             except Exception:
                                 pass
 
-                        if is_ws_match(sws):
                             seen_ids.add(sid)
                             out = {
                                 'id': sid,
                                 'agent': 'OpenCode',
-                                'timestamp': updated_ts or created_ts or str(int(os.path.getmtime(db_path))),
+                                'timestamp': str(t_update or t_create or ''),
                                 'workspace': sws,
-                                'turns': max(1, message_count),
-                                'prompt': (clean_text(sprompt) or '(OpenCode session)')[:150]
+                                'turns': max(1, turns),
+                                'prompt': (clean_text(stitle) or '(OpenCode session)')[:150]
                             }
                             print(json.dumps(out))
-            conn.close()
-        except Exception:
-            pass
+                conn.close()
+            except Exception:
+                pass
 
-    # 2. Search for JSON / JSONL session files in session directories
+    # 2. Check JSON/JSONL session storage
     for sfile in glob.glob(os.path.join(base_dir, '**', '*.json*'), recursive=True):
         if not os.path.isfile(sfile) or os.path.basename(sfile).startswith('.'):
             continue
         try:
             filename = os.path.basename(sfile)
-            session_id = os.path.splitext(filename)[0]
-            
-            if session_id.lower() in IGNORED_NAMES or 'node_modules' in sfile or session_id in seen_ids:
+            raw_id = os.path.splitext(filename)[0]
+            if raw_id.lower() in IGNORED_NAMES or 'node_modules' in sfile or raw_id in seen_ids:
                 continue
 
-            parent_dir = os.path.basename(os.path.dirname(sfile)).lower()
-            is_valid_dir = any(k in parent_dir for k in ('session', 'conversation', 'chat', 'history', 'tasks', 'agents', 'storage'))
-            is_valid_id = bool(re.match(r'^(ses_|task_|conv_|[0-9a-f-]{8,})', session_id, re.I))
-
-            if not (is_valid_dir or is_valid_id):
-                continue
-
+            session_id = raw_id
             mtime = int(os.path.getmtime(sfile))
-            with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read().strip()
-                if not content:
-                    continue
-                
-                data = None
-                first_prompt = ''
-                sws = ''
+            turns = 0
+            first_prompt = ''
+            sws = ''
+
+            # Check if JSONL
+            is_jsonl = sfile.endswith('.jsonl')
+            if is_jsonl:
+                with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                            turns += 1
+                            if not sws:
+                                sws = d.get('workspace') or d.get('cwd') or d.get('project_path') or ''
+                            if not first_prompt:
+                                role = d.get('role') or d.get('type')
+                                if role in ('user', 'human'):
+                                    first_prompt = clean_text(d.get('content') or d.get('text') or '')
+                        except Exception:
+                            continue
+            else:
+                with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read().strip()
                 turns = 1
 
                 if content.startswith('{'):
@@ -182,7 +180,7 @@ for base_dir in opencode_dirs:
                 print(json.dumps(out))
         except Exception:
             continue
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -204,7 +202,7 @@ show_opencode_session() {
             for db in "$bdir"/*.db "$bdir"/**/*.db; do
                 if [[ -f "$db" ]] && command -v python3 &>/dev/null; then
                     local db_res
-                    db_res="$(python3 -c "
+                    db_res="$(python3 - "$db" "$session_id" << 'EOF' 2>/dev/null
 import sqlite3, sys
 db_path = sys.argv[1]
 sid = sys.argv[2]
@@ -221,7 +219,8 @@ try:
 except Exception:
     pass
 sys.exit(1)
-" "$db" "$session_id" 2>/dev/null)"
+EOF
+)"
                     if [[ $? -eq 0 && -n "$db_res" ]]; then
                         echo -e "${COLOR_BOLD}${COLOR_GREEN}${db_res}${COLOR_RESET}"
                         return 0
@@ -237,7 +236,7 @@ sys.exit(1)
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys
 
 def clean_text(val):
@@ -265,7 +264,7 @@ try:
                 print(f'{content}\n')
 except Exception:
     pass
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

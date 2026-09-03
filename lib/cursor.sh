@@ -16,7 +16,7 @@ list_cursor_sessions() {
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -61,64 +61,72 @@ for base_dir in cursor_dirs:
             continue
         try:
             filename = os.path.basename(sfile)
-            raw_id = os.path.splitext(filename)[0]
-            if raw_id in seen_ids:
+            sid = os.path.splitext(filename)[0]
+            if sid in seen_ids or 'node_modules' in sfile:
                 continue
 
             mtime = int(os.path.getmtime(sfile))
-            turns = 0
-            first_prompt = ''
             sws = ''
+            first_prompt = ''
+            turns = 0
             created_at = ''
-            updated_at = ''
 
-            # Check for workspace.json in parent workspaceStorage
-            ws_meta = os.path.join(os.path.dirname(os.path.dirname(sfile)), 'workspace.json')
-            if os.path.isfile(ws_meta):
-                try:
-                    with open(ws_meta, 'r', encoding='utf-8') as wsf:
-                        wdata = json.load(wsf)
-                        uri = wdata.get('folder') or ''
-                        if uri.startswith('file://'):
-                            sws = os.path.normpath(uri[7:])
-                except Exception:
-                    pass
+            # Check workspace.json in parent tree
+            parent = os.path.dirname(sfile)
+            for _ in range(4):
+                ws_file = os.path.join(parent, 'workspace.json')
+                if os.path.isfile(ws_file):
+                    try:
+                        with open(ws_file, 'r', encoding='utf-8') as wf:
+                            wdata = json.load(wf)
+                            folder = wdata.get('folder') or wdata.get('workspace') or ''
+                            if folder.startswith('file://'):
+                                folder = folder[7:]
+                            if folder and os.path.isdir(folder):
+                                sws = folder
+                                break
+                    except Exception:
+                        pass
+                parent = os.path.dirname(parent)
 
+            # Read transcript events
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     line = line.strip()
                     if not line: continue
                     try:
                         record = json.loads(line)
-                        turns += 1
-                        ts = record.get('timestamp') or record.get('created_at')
-                        if ts and not created_at: created_at = str(ts)
-                        if ts: updated_at = str(ts)
-
-                        if not sws and 'workspace' in record:
-                            sws = record['workspace']
-
                         role = record.get('role') or record.get('type') or ''
-                        if role in ('user', 'human') and not first_prompt:
-                            txt = clean_text(record.get('text') or record.get('content') or record.get('message') or '')
-                            if txt: first_prompt = txt
+                        txt = clean_text(record.get('text') or record.get('content') or record.get('message') or '')
+                        
+                        if role in ('user', 'human'):
+                            turns += 1
+                            if not first_prompt and txt:
+                                first_prompt = txt
+                        elif role in ('assistant', 'model', 'agent'):
+                            turns += 1
+
+                        if not sws:
+                            cand = record.get('workspace') or record.get('cwd') or record.get('root') or ''
+                            if cand and isinstance(cand, str) and cand.startswith('/'):
+                                sws = cand
                     except Exception:
                         continue
 
             if is_ws_match(sws):
-                seen_ids.add(raw_id)
+                seen_ids.add(sid)
                 out = {
-                    'id': raw_id,
+                    'id': sid,
                     'agent': 'Cursor',
-                    'timestamp': updated_at or created_at or str(mtime),
+                    'timestamp': str(created_at or mtime),
                     'workspace': sws,
                     'turns': max(1, turns),
-                    'prompt': (first_prompt or '(Cursor session)')[:150]
+                    'prompt': (clean_text(first_prompt) or '(Cursor session)')[:150]
                 }
                 print(json.dumps(out))
         except Exception:
             continue
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -143,7 +151,7 @@ show_cursor_session() {
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys
 
 def clean_text(val):
@@ -175,7 +183,7 @@ with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 step += 1
         except Exception:
             continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

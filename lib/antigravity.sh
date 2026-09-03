@@ -26,7 +26,7 @@ list_antigravity_sessions() {
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, re, collections
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -296,7 +296,7 @@ if os.path.isfile(projects_file):
                             continue
     except Exception:
         pass
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -322,9 +322,13 @@ show_antigravity_session() {
         if [[ -d "$bdir/$session_id" ]]; then
             conv_dir="$bdir/$session_id"
             break
-        elif [[ -d "$bdir" ]]; then
-            conv_dir="$(find "$bdir" -maxdepth 1 -name "*${session_id}*" -type d 2>/dev/null | head -n 1)"
-            [[ -n "$conv_dir" ]] && break
+        fi
+        if [[ -d "$bdir" ]]; then
+            local match="$(find "$bdir" -maxdepth 1 -name "*${session_id}*" -type d 2>/dev/null | head -n 1)"
+            if [[ -n "$match" && -d "$match" ]]; then
+                conv_dir="$match"
+                break
+            fi
         fi
     done
 
@@ -351,7 +355,7 @@ show_antigravity_session() {
     echo -e "${COLOR_DIM}Log: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys, re
 
 def clean_text(val):
@@ -384,7 +388,7 @@ with open(tfile, 'r', encoding='utf-8', errors='ignore') as f:
             ts = data.get('created_at') or data.get('timestamp') or ''
             raw_content = data.get('content') or data.get('message') or ''
             
-            msgs = data.get('\$set', {}).get('messages', []) or data.get('messages', [])
+            msgs = data.get('$set', {}).get('messages', []) or data.get('messages', [])
             if msgs:
                 for m in msgs:
                     m_role = m.get('type') or m.get('role') or 'event'
@@ -418,7 +422,7 @@ with open(tfile, 'r', encoding='utf-8', errors='ignore') as f:
                 step += 1
         except Exception:
             continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

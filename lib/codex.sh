@@ -17,7 +17,7 @@ list_codex_sessions() {
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -287,7 +287,7 @@ for base_dir in search_dirs:
                 print(json.dumps(out))
         except Exception:
             continue
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -312,7 +312,7 @@ show_codex_session() {
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys, re
 
 def clean_text(val):
@@ -397,7 +397,7 @@ if not is_single:
                         step += 1
             except Exception:
                 continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

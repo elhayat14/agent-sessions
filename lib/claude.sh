@@ -21,7 +21,7 @@ get_claude_project_dirs() {
     fi
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$CLAUDE_PROJECTS_DIR" << 'EOF' 2>/dev/null
 import os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -32,8 +32,8 @@ def resolve_project_dir_to_ws(pdir):
         try:
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
-                    if '\"cwd\":' in line:
-                        m = re.search(r'\"cwd\"\s*:\s*\"([^\"]+)\"', line)
+                    if '"cwd":' in line:
+                        m = re.search(r'"cwd"\s*:\s*"([^"]+)"', line)
                         if m and os.path.isdir(m.group(1)):
                             return os.path.normpath(m.group(1))
         except Exception:
@@ -69,7 +69,7 @@ if os.path.isdir(projects_dir):
             # Match exact project or subdirectories inside target workspace
             if r_norm == target_ws or r_norm.startswith(target_ws + '/'):
                 print(entry.path)
-" "$target_ws" "$CLAUDE_PROJECTS_DIR"
+EOF
     fi
 }
 
@@ -99,7 +99,7 @@ list_claude_sessions() {
             [[ "$session_id" == "sessions" || "$session_id" == "config" ]] && continue
 
             if command -v python3 &>/dev/null; then
-                python3 -c "
+                python3 - "$sfile" "$session_id" "$slug" "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, re, glob
 
 sfile = sys.argv[1]
@@ -114,8 +114,8 @@ def resolve_project_dir_to_ws(pd):
         try:
             with open(sf, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
-                    if '\"cwd\":' in line:
-                        m = re.search(r'\"cwd\"\s*:\s*\"([^\"]+)\"', line)
+                    if '"cwd":' in line:
+                        m = re.search(r'"cwd"\s*:\s*"([^"]+)"', line)
                         if m and os.path.isdir(m.group(1)):
                             return os.path.normpath(m.group(1))
         except Exception:
@@ -240,7 +240,7 @@ try:
     print(json.dumps(out))
 except Exception:
     pass
-" "$sfile" "$session_id" "$slug" "$target_ws" "$match_all" 2>/dev/null
+EOF
             fi
         done
     done <<< "$proj_dirs"
@@ -264,7 +264,7 @@ show_claude_session() {
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys, re
 
 def clean_text(val):
@@ -330,7 +330,7 @@ with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 step += 1
         except Exception:
             continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

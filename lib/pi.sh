@@ -11,14 +11,14 @@ PI_DIRS=(
     "$HOME/.config/pi/agent/sessions"
 )
 
-# Parse all Pi/OMP/Prime sessions for target workspace
+# Parse all Pi sessions for target workspace
 # Outputs JSON records: {"id": "...", "agent": "Pi", "timestamp": "...", "workspace": "...", "turns": N, "prompt": "..."}
 list_pi_sessions() {
     local target_ws="$1"
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -61,6 +61,20 @@ def is_ws_match(sws):
     s_norm = os.path.normpath(sws).rstrip('/')
     return (s_norm == target_ws) or s_norm.startswith(target_ws + '/')
 
+def extract_cwd(obj):
+    if not isinstance(obj, dict):
+        return ''
+    for k in ('cwd', 'workspace', 'directory', 'project_path', 'root'):
+        if k in obj and obj[k] and isinstance(obj[k], str) and obj[k].startswith('/'):
+            return obj[k]
+    for wrapper_key in ('payload', 'data', 'event', 'meta', 'params', 'args'):
+        nested = obj.get(wrapper_key)
+        if isinstance(nested, dict):
+            c = extract_cwd(nested)
+            if c:
+                return c
+    return ''
+
 seen_ids = set()
 
 for base_dir in pi_dirs:
@@ -72,16 +86,16 @@ for base_dir in pi_dirs:
             continue
         try:
             filename = os.path.basename(sfile)
-            session_id = os.path.splitext(filename)[0]
-
-            if session_id.lower() in IGNORED_NAMES or session_id in seen_ids:
+            raw_id = os.path.splitext(filename)[0]
+            if raw_id.lower() in IGNORED_NAMES or 'node_modules' in sfile or raw_id in seen_ids:
                 continue
 
-            # Skip artifact directories
+            # Skip internal artifact storage directories
             parent_name = os.path.basename(os.path.dirname(sfile))
-            if re.match(r'^\d+_[0-9a-f-]{8,}$', parent_name, re.I):
+            if re.match(r'^\d+_[0-9a-f-]{8,}$', parent_name):
                 continue
 
+            session_id = raw_id
             mtime = int(os.path.getmtime(sfile))
             turns = 0
             first_prompt = ''
@@ -89,6 +103,7 @@ for base_dir in pi_dirs:
             created_at = ''
             updated_at = ''
 
+            # Check if single JSON or JSONL
             is_single = False
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 first_char = f.read(1)
@@ -98,21 +113,20 @@ for base_dir in pi_dirs:
                         content = f.read()
                         data = json.loads(content)
                         is_single = True
-                        sid = data.get('session_id') or data.get('id') or session_id
-                        sws = data.get('workspace') or data.get('cwd') or data.get('project_path') or ''
-                        first_prompt = clean_text(data.get('prompt') or data.get('title') or data.get('initial_prompt') or '')
-                        ts = data.get('created_at') or data.get('timestamp')
-                        if ts:
-                            created_at = str(ts)
+                        sid = data.get('session_id') or data.get('id')
+                        if sid:
+                            session_id = str(sid)
+                        sws = extract_cwd(data)
+                        first_prompt = clean_text(data.get('prompt') or data.get('title') or '')
                         
                         msgs = data.get('messages') or data.get('turns') or data.get('history') or []
                         if isinstance(msgs, list):
                             turns = len(msgs)
-                            if not first_prompt and turns > 0:
-                                for m in msgs:
-                                    if isinstance(m, dict) and m.get('role') in ('user', 'human'):
-                                        first_prompt = clean_text(m.get('content') or m.get('text') or '')
-                                        break
+                            for m in msgs:
+                                if not sws:
+                                    sws = extract_cwd(m)
+                                if not first_prompt and isinstance(m, dict) and m.get('role') in ('user', 'human'):
+                                    first_prompt = clean_text(m.get('content') or m.get('text') or '')
                     except Exception:
                         is_single = False
 
@@ -132,21 +146,22 @@ for base_dir in pi_dirs:
                                 updated_at = str(ts)
                             
                             if not sws:
-                                sws = data.get('workspace') or data.get('cwd') or ''
-
+                                sws = extract_cwd(data)
                             if not first_prompt:
                                 role = data.get('role') or data.get('type')
                                 if role in ('user', 'human', 'USER_INPUT'):
-                                    first_prompt = clean_text(data.get('content') or data.get('message') or '')
+                                    first_prompt = clean_text(data.get('content') or data.get('message') or data.get('text') or data.get('prompt') or '')
                         except Exception:
                             continue
 
             if is_ws_match(sws):
                 seen_ids.add(session_id)
+                seen_ids.add(raw_id)
+                
                 agent_name = 'Pi'
-                if '.omp' in sfile:
+                if '.omp' in base_dir:
                     agent_name = 'OMP'
-                elif '.prime' in sfile:
+                elif '.prime' in base_dir:
                     agent_name = 'Prime'
 
                 out = {
@@ -160,7 +175,7 @@ for base_dir in pi_dirs:
                 print(json.dumps(out))
         except Exception:
             continue
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -185,7 +200,7 @@ show_pi_session() {
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys
 
 def clean_text(val):
@@ -237,7 +252,7 @@ if not is_single:
                     step += 1
             except Exception:
                 continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi

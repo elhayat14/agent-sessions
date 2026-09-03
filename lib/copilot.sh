@@ -7,16 +7,17 @@ COPILOT_DIRS=(
     "$HOME/.copilot/session-state"
     "$HOME/.config/github-copilot/session-state"
     "$HOME/.copilot/sessions"
+    "$HOME/.config/github-copilot/sessions"
 )
 
-# Parse all Copilot CLI sessions for target workspace
+# Parse all GitHub Copilot CLI sessions for target workspace
 # Outputs JSON records: {"id": "...", "agent": "Copilot", "timestamp": "...", "workspace": "...", "turns": N, "prompt": "..."}
 list_copilot_sessions() {
     local target_ws="$1"
     local match_all="${2:-false}"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$target_ws" "$match_all" << 'EOF' 2>/dev/null
 import json, os, sys, glob, re
 
 target_ws = os.path.normpath(sys.argv[1]).rstrip('/')
@@ -58,67 +59,58 @@ for base_dir in copilot_dirs:
             continue
         try:
             filename = os.path.basename(sfile)
-            raw_id = os.path.splitext(filename)[0]
-            if raw_id in seen_ids:
+            sid = os.path.splitext(filename)[0]
+            if sid in seen_ids or 'node_modules' in sfile:
                 continue
 
             mtime = int(os.path.getmtime(sfile))
-            turns = 0
-            first_prompt = ''
             sws = ''
+            first_prompt = ''
+            turns = 0
             created_at = ''
-            updated_at = ''
 
+            # Scan line-by-line JSONL events
             with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     line = line.strip()
                     if not line: continue
                     try:
                         record = json.loads(line)
-                        turns += 1
-                        ts = record.get('timestamp')
-                        if ts and not created_at: created_at = str(ts)
-                        if ts: updated_at = str(ts)
-
-                        data = record.get('data') if isinstance(record.get('data'), dict) else {}
                         rtype = record.get('type') or ''
+                        data = record.get('data') if isinstance(record.get('data'), dict) else {}
+                        
+                        # Session startup metadata
+                        if rtype == 'session.start' or 'session.start' in rtype:
+                            if not sws:
+                                sws = data.get('cwd') or (data.get('trustedFolders', [None])[0] if isinstance(data.get('trustedFolders'), list) else '')
+                            if not created_at:
+                                created_at = record.get('timestamp') or data.get('startTime') or ''
 
-                        if rtype == 'session.start':
-                            sid = data.get('sessionId')
-                            if sid: raw_id = str(sid)
-                            if data.get('startTime'): created_at = str(data['startTime'])
+                        # Messages
+                        if rtype in ('user.message', 'user', 'turn.start'):
+                            turns += 1
+                            if not first_prompt:
+                                first_prompt = clean_text(data.get('transformedContent') or data.get('content') or record.get('content') or '')
 
-                        if rtype == 'session.info' or 'trustedFolder' in str(data):
-                            msg = data.get('message') or ''
-                            m = re.search(r'folder\s+[\'\"]?([^\'\"]+)[\'\"]?', msg)
-                            if m and os.path.isdir(m.group(1)):
-                                sws = m.group(1)
-
-                        if 'cwd' in data and os.path.isdir(data['cwd']):
+                        if not sws and 'cwd' in data:
                             sws = data['cwd']
-
-                        if rtype == 'user.message' or rtype == 'user':
-                            content = data.get('transformedContent') or data.get('content') or record.get('content') or ''
-                            txt = clean_text(content)
-                            if txt and not first_prompt:
-                                first_prompt = txt
                     except Exception:
                         continue
 
             if is_ws_match(sws):
-                seen_ids.add(raw_id)
+                seen_ids.add(sid)
                 out = {
-                    'id': raw_id,
+                    'id': sid,
                     'agent': 'Copilot',
-                    'timestamp': updated_at or created_at or str(mtime),
+                    'timestamp': str(created_at or mtime),
                     'workspace': sws,
                     'turns': max(1, turns),
-                    'prompt': (first_prompt or '(Copilot session)')[:150]
+                    'prompt': (clean_text(first_prompt) or '(Copilot session)')[:150]
                 }
                 print(json.dumps(out))
         except Exception:
             continue
-" "$target_ws" "$match_all" 2>/dev/null
+EOF
     fi
 }
 
@@ -143,7 +135,7 @@ show_copilot_session() {
     echo -e "${COLOR_DIM}File: ${found_file}${COLOR_RESET}\n"
 
     if command -v python3 &>/dev/null; then
-        python3 -c "
+        python3 - "$found_file" << 'EOF'
 import json, sys, re
 
 def clean_text(val):
@@ -180,7 +172,7 @@ with open(sfile, 'r', encoding='utf-8', errors='ignore') as f:
                     step += 1
         except Exception:
             continue
-" "$found_file"
+EOF
     else
         cat "$found_file"
     fi
